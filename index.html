@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SciGIF Studio — Scientific Schematic GIF Maker</title>
+<style>
+  :root{
+    --bg:#f1f5f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --accent:#2563eb; --border:#e2e8f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,Arial,sans-serif;background:var(--bg);color:var(--ink);display:flex;min-height:100vh}
+  #sidebar{width:330px;min-width:330px;background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow-y:auto;height:100vh}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{font-size:12px;color:var(--muted);margin-bottom:14px}
+  fieldset{border:1px solid var(--border);border-radius:8px;margin:0 0 12px;padding:8px 12px 10px}
+  legend{font-size:11px;font-weight:600;color:var(--muted);padding:0 4px;text-transform:uppercase;letter-spacing:.05em}
+  label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;margin:7px 0}
+  label>span:first-child{white-space:nowrap}
+  span.val{color:var(--muted);font-size:12px;min-width:34px;text-align:right}
+  input[type=range]{flex:1;min-width:60px}
+  input[type=text],input[type=number],select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px;background:#fff}
+  input[type=text]{width:160px}
+  input[type=number]{width:74px}
+  input[type=color]{width:38px;height:24px;border:1px solid var(--border);border-radius:4px;padding:1px;background:none;cursor:pointer}
+  select{width:100%}
+  .desc{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.4}
+  button{display:block;width:100%;padding:8px 10px;margin:6px 0;border:1px solid var(--border);border-radius:8px;background:#fff;font:inherit;font-size:13px;cursor:pointer}
+  button:hover{background:#f8fafc}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#1d4ed8}
+  button:disabled{opacity:.5;cursor:default}
+  progress{width:100%;height:8px;margin-top:4px}
+  .foot{font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5}
+  #main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:10px;min-width:0}
+  #canvas{border:1px solid var(--border);border-radius:8px;max-width:100%;max-height:82vh;box-shadow:0 4px 18px rgba(15,23,42,.10)}
+  #hint{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>SciGIF Studio</h1>
+  <div class="sub">Animated scientific schematics &rarr; looping GIF</div>
+
+  <fieldset>
+    <legend>Template</legend>
+    <select id="tplSelect"></select>
+    <div class="desc" id="tplDesc"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Template options</legend>
+    <div id="tplParams"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Canvas</legend>
+    <label><span>Width (px)</span><input type="number" id="cw" min="200" max="1600" step="10" value="800"></label>
+    <label><span>Height (px)</span><input type="number" id="ch" min="200" max="1200" step="10" value="450"></label>
+    <label><span>Background</span><input type="color" id="bg" value="#ffffff"></label>
+    <label><span>Title</span><input type="text" id="title" placeholder="optional"></label>
+    <label><span>Title color</span><input type="color" id="titleColor" value="#0f172a"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Animation</legend>
+    <label><span>Duration</span><input type="range" id="dur" min="1" max="10" step="0.5" value="3"><span class="val" id="durV">3 s</span></label>
+    <label><span>Frame rate</span><input type="range" id="fps" min="8" max="30" step="1" value="20"><span class="val" id="fpsV">20</span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Export</legend>
+    <button id="exportBtn" class="primary">&#11015; Export GIF</button>
+    <button id="pngBtn">Save current frame as PNG</button>
+    <progress id="prog" max="1" value="0" hidden></progress>
+    <div class="desc" id="status"></div>
+  </fieldset>
+
+  <div class="foot">All GIFs loop seamlessly. Everything renders locally in your browser &mdash; nothing is uploaded.</div>
+</div>
+<div id="main">
+  <canvas id="canvas" width="800" height="450"></canvas>
+  <div id="hint">Live preview &mdash; the exported GIF matches exactly.</div>
+</div>
+
+<script>
+"use strict";
+/* ============================ utilities ============================ */
+const $ = s => document.querySelector(s);
+function rnd(seed){ const x = Math.sin(seed*127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+function lerp(a,b,u){ return a + (b-a)*u; }
+function clamp(x,a,b){ return Math.min(b, Math.max(a,x)); }
+function smooth(u){ u = clamp(u,0,1); return u*u*(3-2*u); }
+function hex2rgb(h){ const v = parseInt(h.slice(1),16); return [(v>>16)&255,(v>>8)&255,v&255]; }
+function mixColor(h1,h2,u){
+  const a = hex2rgb(h1), b = hex2rgb(h2);
+  return `rgb(${Math.round(lerp(a[0],b[0],u))},${Math.round(lerp(a[1],b[1],u))},${Math.round(lerp(a[2],b[2],u))})`;
+}
+function shade(hex,amt){ const c = hex2rgb(hex); return `rgb(${c.map(v=>clamp(v+amt,0,255)).join(",")})`; }
+
+function text(ctx,str,x,y,o={}){
+  ctx.fillStyle = o.color || "#0f172a";
+  ctx.font = `${o.bold ? "600 " : ""}${o.size||14}px "Segoe UI", Arial, sans-serif`;
+  ctx.textAlign = o.align || "center";
+  ctx.textBaseline = o.baseline || "middle";
+  ctx.fillText(str,x,y);
+}
+function arrow(ctx,x1,y1,x2,y2,color,w=3,head=9){
+  const a = Math.atan2(y2-y1, x2-x1);
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-head*Math.cos(a-0.45), y2-head*Math.sin(a-0.45));
+  ctx.lineTo(x2-head*Math.cos(a+0.45), y2-head*Math.sin(a+0.45));
+  ctx.closePath(); ctx.fill();
+}
+function vArrow2(ctx,x,ya,yb,color,s){ // vertical double-headed arrow
+  if (Math.abs(ya-yb) < 14*s){ ctx.strokeStyle=color; ctx.lineWidth=2*s;
+    ctx.beginPath(); ctx.moveTo(x,ya); ctx.lineTo(x,yb); ctx.stroke(); return; }
+  const mid = (ya+yb)/2;
+  arrow(ctx,x,mid,x,ya,color,2*s,6*s);
+  arrow(ctx,x,mid,x,yb,color,2*s,6*s);
+}
+
+/* ============================ GIF encoder ============================ */
+/* Minimal dependency-free GIF89a encoder: local color table per frame,
+   LZW compression, infinite loop via NETSCAPE2.0 extension. */
+function quantize(img){
+  const d = img.data, n = img.width * img.height;
+  const masks = [0xFF,0xFC,0xF8,0xF0,0xE0,0xC0];
+  for (const mask of masks){
+    const off = (~mask & 0xFF) >> 1;
+    const map = new Map(), palette = [], indices = new Uint8Array(n);
+    let ok = true;
+    for (let i=0;i<n;i++){
+      const r=(d[i*4]&mask)+off, g=(d[i*4+1]&mask)+off, b=(d[i*4+2]&mask)+off;
+      const key=(r<<16)|(g<<8)|b;
+      let idx = map.get(key);
+      if (idx === undefined){
+        if (palette.length === 256){ ok=false; break; }
+        idx = palette.length; map.set(key,idx); palette.push([r,g,b]);
+      }
+      indices[i]=idx;
+    }
+    if (ok) return {palette,indices};
+  }
+  throw new Error("could not quantize frame");
+}
+
+class GifEncoder{
+  constructor(w,h,fps){
+    this.w=w; this.h=h;
+    this.delay = Math.max(2, Math.round(100/fps));
+    this.bytes=[];
+    this._str("GIF89a");
+    this._u16(w); this._u16(h);
+    this._b(0xF0,0,0);                 // GCT flag set, 2-entry dummy global table
+    this._b(0,0,0,255,255,255);
+    this._b(0x21,0xFF,0x0B); this._str("NETSCAPE2.0"); this._b(3,1,0,0,0); // loop forever
+  }
+  _b(...v){ for (const x of v) this.bytes.push(x & 255); }
+  _u16(v){ this._b(v & 255, (v>>8) & 255); }
+  _str(s){ for (let i=0;i<s.length;i++) this.bytes.push(s.charCodeAt(i)); }
+  addFrame(imageData){
+    const {palette,indices} = quantize(imageData);
+    let tableBits = 2;
+    while ((1<<tableBits) < palette.length) tableBits++;
+    const entries = 1<<tableBits;
+    this._b(0x21,0xF9,4,0x04, this.delay&255, (this.delay>>8)&255, 0, 0); // GCE, disposal=1
+    this._b(0x2C); this._u16(0); this._u16(0); this._u16(this.w); this._u16(this.h);
+    this._b(0x80 | (tableBits-1));     // local color table
+    for (let i=0;i<entries;i++){ const c = palette[i] || [0,0,0]; this._b(c[0],c[1],c[2]); }
+    this._b(tableBits);                // LZW min code size
+    this._lzw(indices, tableBits);
+  }
+  _lzw(indices, minCodeSize){
+    const out=[];
+    const clear = 1<<minCodeSize, eoi = clear+1;
+    let next = eoi+1, codeSize = minCodeSize+1;
+    let cur=0, shift=0;
+    const emit = c => {
+      cur |= c << shift; shift += codeSize;
+      while (shift >= 8){ out.push(cur & 255); cur >>>= 8; shift -= 8; }
+    };
+    let table = new Map();
+    emit(clear);
+    let prev = indices[0];
+    for (let i=1;i<indices.length;i++){
+      const k = indices[i];
+      const key = (prev<<8) | k;
+      const code = table.get(key);
+      if (code !== undefined){ prev = code; continue; }
+      emit(prev);
+      if (next === 4096){
+        emit(clear); table = new Map(); next = eoi+1; codeSize = minCodeSize+1;
+      } else {
+        if (next >= (1<<codeSize)) codeSize++;
+        table.set(key, next++);
+      }
+      prev = k;
+    }
+    emit(prev); emit(eoi);
+    if (shift > 0) out.push(cur & 255);
+    for (let i=0;i<out.length;i+=255){
+      const n = Math.min(255, out.length-i);
+      this._b(n);
+      for (let j=0;j<n;j++) this.bytes.push(out[i+j]);
+    }
+    this._b(0);
+  }
+  finish(){ this._b(0x3B); return Uint8Array.from(this.bytes); }
+}
+
+/* ============================ templates ============================ */
+/* Every draw(ctx,t,P,W,H) receives t in [0,1). All motion uses integer
+   frequencies of t, so the animation tiles perfectly when the GIF loops. */
+
+function drawFlow(ctx,t,P,W,H){
+  const s = W/800;
+  const cy = H*0.56, th = Math.min(H*0.34, 160*s);
+  const x0 = W*0.07, x1 = W*0.93, bedA = W*0.40, bedB = W*0.60;
+  // reactor walls
+  ctx.strokeStyle = P.tubeColor; ctx.lineWidth = 3*s; ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(x0, cy-th/2); ctx.lineTo(x1, cy-th/2);
+  ctx.moveTo(x0, cy+th/2); ctx.lineTo(x1, cy+th/2);
+  ctx.stroke();
+  // packed catalyst bed
+  const br = 7*s;
+  ctx.fillStyle = P.bedColor;
+  let row = 0;
+  for (let y = cy-th/2+br*1.4; y < cy+th/2-br*0.9; y += br*1.75, row++){
+    const off = (row%2)*br*0.95;
+    for (let x = bedA+br+off; x < bedB-br*0.5; x += br*1.9){
+      ctx.beginPath(); ctx.arc(x,y,br,0,7); ctx.fill();
+    }
+  }
+  ctx.save();
+  ctx.setLineDash([5*s,4*s]); ctx.strokeStyle = P.tubeColor; ctx.lineWidth = 1.5*s;
+  ctx.beginPath();
+  ctx.moveTo(bedA, cy-th/2); ctx.lineTo(bedA, cy+th/2);
+  ctx.moveTo(bedB, cy-th/2); ctx.lineTo(bedB, cy+th/2);
+  ctx.stroke();
+  ctx.restore();
+  // gas molecules: reactant color before the bed, product color after
+  const pr = 5.5*s;
+  for (let i=0;i<P.particles;i++){
+    const u = (rnd(i*3+1) + t*P.speed) % 1;
+    const x = x0 + u*(x1-x0);
+    const fq = 1 + Math.floor(rnd(i*7+2)*3);
+    const y = cy + (rnd(i*3+2)-0.5)*(th-6*pr) + Math.sin(2*Math.PI*(fq*t + rnd(i*3+3)))*2.5*s;
+    const conv = smooth((x-bedA)/(bedB-bedA));
+    ctx.fillStyle = mixColor(P.reactantColor, P.productColor, conv);
+    ctx.beginPath(); ctx.arc(x,y,pr,0,7); ctx.fill();
+  }
+  // labels
+  const ly = cy - th/2 - 22*s;
+  const lxi = (x0+bedA)/2, lxo = (bedB+x1)/2;
+  text(ctx, P.inLabel,  lxi, ly-14*s, {size:15*s, bold:true, color:P.reactantColor});
+  arrow(ctx, lxi-22*s, ly, lxi+22*s, ly, P.reactantColor, 3*s, 8*s);
+  text(ctx, P.outLabel, lxo, ly-14*s, {size:15*s, bold:true, color:P.productColor});
+  arrow(ctx, lxo-22*s, ly, lxo+22*s, ly, P.productColor, 3*s, 8*s);
+  text(ctx, P.bedLabel, W/2, cy+th/2+22*s, {size:14*s, color:"#334155"});
+}
+
+function drawSurface(ctx,t,P,W,H){
+  const s = W/800;
+  const ar = 15*s, surfY = H*0.74;
+  for (let row=0; row<2; row++){
+    const y = surfY + ar + row*ar*1.65;
+    ctx.fillStyle = row ? shade(P.surfaceColor,-25) : P.surfaceColor;
+    for (let x = row?ar:0; x < W+ar; x += ar*1.9){
+      ctx.beginPath(); ctx.arc(x,y,ar,0,7); ctx.fill();
+    }
+  }
+  const nS = P.sites;
+  for (let j=0;j<nS;j++){
+    const x = W*(j+1)/(nS+1);
+    const p = (t + j/nS) % 1;
+    const topY = H*0.13, adsY = surfY-9*s, mr = 9*s;
+    let y, col, sep = mr*0.95;
+    if (p < 0.3){                       // approach
+      y = lerp(topY, adsY, smooth(p/0.3)); col = P.reactantColor;
+    } else if (p < 0.62){               // adsorbed: vibrate + react
+      const u = (p-0.3)/0.32;
+      y = adsY + Math.sin(u*10*Math.PI)*1.6*s;
+      col = mixColor(P.reactantColor, P.productColor, smooth(u));
+      sep = mr*(0.95 + 0.35*Math.sin(u*Math.PI));
+    } else {                            // desorb
+      y = lerp(adsY, topY, smooth((p-0.62)/0.38)); col = P.productColor;
+    }
+    let alpha = 1;
+    if (p < 0.07) alpha = p/0.07; else if (p > 0.93) alpha = (1-p)/0.07;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x-sep, y, mr, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+sep, y, mr, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  text(ctx, P.label, W/2, H*0.955, {size:14*s, color:"#334155"});
+}
+
+function drawDiffusion(ctx,t,P,W,H){
+  const s = W/800, m = 26*s, r = P.radius*s, A = P.amplitude*s;
+  const bx0=m, by0=m, bx1=W-m, by1=H-m;
+  if (P.box){ ctx.strokeStyle="#94a3b8"; ctx.lineWidth=2*s; ctx.strokeRect(bx0,by0,bx1-bx0,by1-by0); }
+  ctx.fillStyle = P.color;
+  for (let i=0;i<P.count;i++){
+    const q = i*13.7 + P.seed*101;
+    const bx = lerp(bx0+r, bx1-r, rnd(q+1));
+    const by = lerp(by0+r, by1-r, rnd(q+2));
+    const f1 = 1+Math.floor(rnd(q+3)*3), f2 = 2+Math.floor(rnd(q+4)*4);
+    const f3 = 1+Math.floor(rnd(q+5)*3), f4 = 2+Math.floor(rnd(q+6)*4);
+    const dx = A*(0.7*Math.sin(2*Math.PI*(f1*t+rnd(q+7))) + 0.3*Math.sin(2*Math.PI*(f2*t+rnd(q+8))));
+    const dy = A*(0.7*Math.sin(2*Math.PI*(f3*t+rnd(q+9))) + 0.3*Math.sin(2*Math.PI*(f4*t+rnd(q+10))));
+    const x = clamp(bx+dx, bx0+r, bx1-r), y = clamp(by+dy, by0+r, by1-r);
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  }
+}
+
+function drawEnergy(ctx,t,P,W,H){
+  const s = W/800;
+  const x0 = W*0.13, x1 = W*0.90, y0 = H*0.80, scale = H*0.36;
+  const E = u => P.deltaE*smooth((u-0.32)/0.36) + P.barrier*Math.exp(-((u-0.5)**2)/(2*0.115**2));
+  const X = u => lerp(x0,x1,u), Y = u => y0 - E(u)*scale;
+  // axes
+  arrow(ctx, x0-26*s, y0+14*s, x0-26*s, H*0.14, "#475569", 2*s, 7*s);
+  arrow(ctx, x0-26*s, y0+14*s, x1+22*s, y0+14*s, "#475569", 2*s, 7*s);
+  ctx.save(); ctx.translate(x0-42*s, H*0.48); ctx.rotate(-Math.PI/2);
+  text(ctx,"Energy",0,0,{size:14*s,color:"#475569"});
+  ctx.restore();
+  text(ctx,"Reaction coordinate",(x0+x1)/2, y0+32*s, {size:14*s,color:"#475569"});
+  // dashed reference levels
+  ctx.save(); ctx.setLineDash([6*s,5*s]); ctx.strokeStyle="#94a3b8"; ctx.lineWidth=1.5*s;
+  ctx.beginPath();
+  ctx.moveTo(X(0.12),Y(0));  ctx.lineTo(X(0.92),Y(0));
+  ctx.moveTo(X(0.70),Y(1));  ctx.lineTo(X(1),Y(1));
+  ctx.stroke(); ctx.restore();
+  // curve
+  ctx.strokeStyle = P.curveColor; ctx.lineWidth = 3*s; ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let i=0;i<=240;i++){ const u=i/240; if(i) ctx.lineTo(X(u),Y(u)); else ctx.moveTo(X(u),Y(u)); }
+  ctx.stroke();
+  // annotations
+  text(ctx, P.reactLabel, X(0.05), Y(0)-16*s, {size:14*s, bold:true});
+  text(ctx, P.prodLabel,  X(0.97), Y(1)-16*s, {size:14*s, bold:true, align:"right"});
+  text(ctx, "TS", X(0.5), Y(0.5)-18*s, {size:13*s, color:"#475569"});
+  if (P.showEa){
+    vArrow2(ctx, X(0.5), Y(0)-2*s, Y(0.5)+4*s, "#475569", s);
+    text(ctx,"Ea", X(0.5)+16*s, (Y(0)+Y(0.5))/2, {size:13*s, color:"#475569", align:"left"});
+    vArrow2(ctx, X(0.84), Y(0)-2*s, Y(1)+(P.deltaE<0?-2:2)*s, "#475569", s);
+    text(ctx,"ΔE", X(0.84)+14*s, (Y(0)+Y(1))/2, {size:13*s, color:"#475569", align:"left"});
+  }
+  // ball rolling over the barrier (fades at loop boundary)
+  const u = smooth(clamp((t-0.12)/0.72, 0, 1));
+  let alpha = 1;
+  if (t < 0.06) alpha = t/0.06; else if (t > 0.94) alpha = (1-t)/0.06;
+  const brr = 8*s;
+  ctx.globalAlpha = alpha; ctx.fillStyle = P.ballColor;
+  ctx.beginPath(); ctx.arc(X(u), Y(u)-brr-2*s, brr, 0, 7); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawWave(ctx,t,P,W,H){
+  const s = W/800, mid = H*0.56, A = P.amplitude*s;
+  ctx.save(); ctx.setLineDash([6*s,6*s]); ctx.strokeStyle="#cbd5e1"; ctx.lineWidth=1.5*s;
+  ctx.beginPath(); ctx.moveTo(0,mid); ctx.lineTo(W,mid); ctx.stroke(); ctx.restore();
+  const yAt = x => mid + A*Math.sin(2*Math.PI*(P.wavelengths*x/W - P.cycles*t));
+  ctx.strokeStyle = P.color; ctx.lineWidth = 3.5*s; ctx.lineJoin = "round";
+  ctx.beginPath();
+  for (let x=0;x<=W;x+=2){ if(x) ctx.lineTo(x,yAt(x)); else ctx.moveTo(x,yAt(x)); }
+  ctx.stroke();
+  if (P.showParticles){
+    const n = P.wavelengths*8;
+    ctx.fillStyle = P.particleColor;
+    for (let i=0;i<=n;i++){ const x=i*W/n; ctx.beginPath(); ctx.arc(x,yAt(x),4.5*s,0,7); ctx.fill(); }
+  }
+  arrow(ctx, W*0.43, H*0.14, W*0.57, H*0.14, "#475569", 2.5*s, 8*s);
+  text(ctx,"v", W*0.5, H*0.14-14*s, {size:15*s, bold:true, color:"#475569"});
+}
+
+function drawCycle(ctx,t,P,W,H){
+  const s = Math.min(W,H)/500;
+  const cx = W/2, cy = H*0.53, R = Math.min(W*0.30, H*0.32);
+  const labels = [P.l1,P.l2,P.l3,P.l4];
+  const angs = [-Math.PI/2, 0, Math.PI/2, Math.PI];
+  // arc arrows (clockwise)
+  ctx.lineCap = "round";
+  const gap = 0.5;
+  for (let i=0;i<4;i++){
+    const a1 = angs[i]+gap, a2 = angs[i]+Math.PI/2-gap;
+    ctx.strokeStyle = P.arrowColor; ctx.lineWidth = 3*s;
+    ctx.beginPath(); ctx.arc(cx,cy,R,a1,a2); ctx.stroke();
+    const hx = cx+R*Math.cos(a2), hy = cy+R*Math.sin(a2);
+    const d = a2 + Math.PI/2;
+    const tx = hx+11*s*Math.cos(d), ty = hy+11*s*Math.sin(d);
+    const px = Math.cos(d+Math.PI/2), py = Math.sin(d+Math.PI/2);
+    ctx.fillStyle = P.arrowColor;
+    ctx.beginPath(); ctx.moveTo(tx,ty);
+    ctx.lineTo(hx+px*6*s, hy+py*6*s); ctx.lineTo(hx-px*6*s, hy-py*6*s);
+    ctx.closePath(); ctx.fill();
+  }
+  // moving marker (drawn under the node boxes)
+  const a = -Math.PI/2 + 2*Math.PI*t;
+  ctx.fillStyle = P.dotColor;
+  ctx.beginPath(); ctx.arc(cx+R*Math.cos(a), cy+R*Math.sin(a), 7*s, 0, 7); ctx.fill();
+  // nodes
+  for (let i=0;i<4;i++){
+    const nx = cx+R*Math.cos(angs[i]), ny = cy+R*Math.sin(angs[i]);
+    ctx.font = `600 ${14*s}px "Segoe UI", Arial, sans-serif`;
+    const bw = ctx.measureText(labels[i]).width + 24*s, bh = 30*s;
+    ctx.fillStyle = "#ffffff"; ctx.strokeStyle = P.nodeColor; ctx.lineWidth = 2*s;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(nx-bw/2, ny-bh/2, bw, bh, 8*s);
+    else ctx.rect(nx-bw/2, ny-bh/2, bw, bh);
+    ctx.fill(); ctx.stroke();
+    text(ctx, labels[i], nx, ny, {size:14*s, bold:true});
+  }
+  text(ctx, P.center, cx, cy, {size:15*s, bold:true, color:"#334155"});
+}
+
+const TEMPLATES = {
+  flow: {
+    name: "Flow reactor (packed bed)",
+    desc: "Gas molecules flow through a packed catalyst bed and change color as they convert to products.",
+    draw: drawFlow,
+    params: [
+      {key:"reactantColor", label:"Reactant color", type:"color", def:"#2563eb"},
+      {key:"productColor",  label:"Product color",  type:"color", def:"#ea580c"},
+      {key:"bedColor",      label:"Catalyst bed",   type:"color", def:"#94a3b8"},
+      {key:"tubeColor",     label:"Reactor wall",   type:"color", def:"#334155"},
+      {key:"particles",     label:"Molecules",      type:"range", min:4, max:40, step:1, def:18},
+      {key:"speed",         label:"Flow speed",     type:"range", min:1, max:4, step:1, def:1},
+      {key:"inLabel",       label:"Inlet label",    type:"text",  def:"CO₂ + 4 H₂"},
+      {key:"outLabel",      label:"Outlet label",   type:"text",  def:"CH₄ + 2 H₂O"},
+      {key:"bedLabel",      label:"Bed label",      type:"text",  def:"Ni/Al₂O₃ catalyst bed"},
+    ],
+  },
+  surface: {
+    name: "Catalyst surface reaction",
+    desc: "Molecules adsorb on a surface, react (color change), and desorb as products.",
+    draw: drawSurface,
+    params: [
+      {key:"reactantColor", label:"Reactant color", type:"color", def:"#2563eb"},
+      {key:"productColor",  label:"Product color",  type:"color", def:"#ea580c"},
+      {key:"surfaceColor",  label:"Surface atoms",  type:"color", def:"#64748b"},
+      {key:"sites",         label:"Active sites",   type:"range", min:1, max:5, step:1, def:3},
+      {key:"label",         label:"Caption",        type:"text",  def:"Catalyst surface"},
+    ],
+  },
+  diffusion: {
+    name: "Particle diffusion / Brownian motion",
+    desc: "Randomly wandering particles in a container. Great for diffusion, gases, or colloids.",
+    draw: drawDiffusion,
+    params: [
+      {key:"color",     label:"Particle color", type:"color", def:"#0d9488"},
+      {key:"count",     label:"Particles",      type:"range", min:5, max:100, step:1, def:40},
+      {key:"radius",    label:"Radius",         type:"range", min:2, max:10, step:0.5, def:5},
+      {key:"amplitude", label:"Motion range",   type:"range", min:10, max:140, step:5, def:60},
+      {key:"box",       label:"Container box",  type:"checkbox", def:true},
+      {key:"seed",      label:"Random seed",    type:"range", min:1, max:50, step:1, def:7},
+    ],
+  },
+  energy: {
+    name: "Reaction energy diagram",
+    desc: "A system crosses the activation barrier from reactants to products. Set ΔE negative for exothermic.",
+    draw: drawEnergy,
+    params: [
+      {key:"curveColor", label:"Curve color",  type:"color", def:"#0f172a"},
+      {key:"ballColor",  label:"Marker color", type:"color", def:"#dc2626"},
+      {key:"barrier",    label:"Barrier (Ea)", type:"range", min:0.3, max:1.2, step:0.05, def:0.8},
+      {key:"deltaE",     label:"ΔE",      type:"range", min:-0.6, max:0.6, step:0.05, def:-0.35},
+      {key:"showEa",     label:"Show Ea / ΔE arrows", type:"checkbox", def:true},
+      {key:"reactLabel", label:"Left label",   type:"text", def:"Reactants"},
+      {key:"prodLabel",  label:"Right label",  type:"text", def:"Products"},
+    ],
+  },
+  wave: {
+    name: "Traveling wave",
+    desc: "A sine wave propagating to the right, with optional medium particles oscillating in place.",
+    draw: drawWave,
+    params: [
+      {key:"color",         label:"Wave color",     type:"color", def:"#2563eb"},
+      {key:"amplitude",     label:"Amplitude",      type:"range", min:10, max:120, step:5, def:50},
+      {key:"wavelengths",   label:"Wavelengths",    type:"range", min:1, max:6, step:1, def:2},
+      {key:"cycles",        label:"Speed (cycles)", type:"range", min:1, max:4, step:1, def:1},
+      {key:"showParticles", label:"Medium particles", type:"checkbox", def:true},
+      {key:"particleColor", label:"Particle color", type:"color", def:"#dc2626"},
+    ],
+  },
+  cycle: {
+    name: "Catalytic / process cycle",
+    desc: "A four-step cycle diagram with a marker traveling around it. Edit the step labels freely.",
+    draw: drawCycle,
+    params: [
+      {key:"arrowColor", label:"Arrow color",  type:"color", def:"#334155"},
+      {key:"nodeColor",  label:"Node border",  type:"color", def:"#2563eb"},
+      {key:"dotColor",   label:"Marker color", type:"color", def:"#dc2626"},
+      {key:"l1", label:"Step 1 (top)",    type:"text", def:"Adsorption"},
+      {key:"l2", label:"Step 2 (right)",  type:"text", def:"Reaction"},
+      {key:"l3", label:"Step 3 (bottom)", type:"text", def:"Desorption"},
+      {key:"l4", label:"Step 4 (left)",   type:"text", def:"Regeneration"},
+      {key:"center", label:"Center label", type:"text", def:"Catalytic cycle"},
+    ],
+  },
+};
+
+/* ============================ state & UI ============================ */
+const state = {
+  template:"flow", width:800, height:450, bg:"#ffffff",
+  duration:3, fps:20, title:"", titleColor:"#0f172a",
+  paramsByTpl:{},
+};
+function P(){ return state.paramsByTpl[state.template]; }
+function initParams(tpl){
+  if (!state.paramsByTpl[tpl]){
+    const o = {};
+    for (const p of TEMPLATES[tpl].params) o[p.key] = p.def;
+    state.paramsByTpl[tpl] = o;
+  }
+}
+
+function buildParamControls(){
+  const box = $("#tplParams"); box.innerHTML = "";
+  for (const p of TEMPLATES[state.template].params){
+    const lab = document.createElement("label");
+    const name = document.createElement("span"); name.textContent = p.label;
+    lab.appendChild(name);
+    const cur = P()[p.key];
+    let inp = document.createElement("input");
+    if (p.type === "range"){
+      inp.type = "range"; inp.min = p.min; inp.max = p.max; inp.step = p.step || 1; inp.value = cur;
+      const v = document.createElement("span"); v.className = "val"; v.textContent = cur;
+      inp.addEventListener("input", () => { P()[p.key] = parseFloat(inp.value); v.textContent = inp.value; });
+      lab.appendChild(inp); lab.appendChild(v);
+    } else if (p.type === "color"){
+      inp.type = "color"; inp.value = cur;
+      inp.addEventListener("input", () => { P()[p.key] = inp.value; });
+      lab.appendChild(inp);
+    } else if (p.type === "checkbox"){
+      inp.type = "checkbox"; inp.checked = cur;
+      inp.addEventListener("input", () => { P()[p.key] = inp.checked; });
+      lab.appendChild(inp);
+    } else {
+      inp.type = "text"; inp.value = cur;
+      inp.addEventListener("input", () => { P()[p.key] = inp.value; });
+      lab.appendChild(inp);
+    }
+    box.appendChild(lab);
+  }
+}
+
+// template selector
+{
+  const sel = $("#tplSelect");
+  for (const [id,tpl] of Object.entries(TEMPLATES)){
+    const o = document.createElement("option");
+    o.value = id; o.textContent = tpl.name;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => {
+    state.template = sel.value;
+    initParams(state.template);
+    buildParamControls();
+    $("#tplDesc").textContent = TEMPLATES[state.template].desc;
+  });
+}
+initParams(state.template);
+buildParamControls();
+$("#tplDesc").textContent = TEMPLATES[state.template].desc;
+
+// global controls
+$("#cw").addEventListener("input", e => { state.width  = clamp(parseInt(e.target.value)||800, 200, 1600); });
+$("#ch").addEventListener("input", e => { state.height = clamp(parseInt(e.target.value)||450, 200, 1200); });
+$("#bg").addEventListener("input", e => { state.bg = e.target.value; });
+$("#title").addEventListener("input", e => { state.title = e.target.value; });
+$("#titleColor").addEventListener("input", e => { state.titleColor = e.target.value; });
+$("#dur").addEventListener("input", e => { state.duration = parseFloat(e.target.value); $("#durV").textContent = e.target.value+" s"; });
+$("#fps").addEventListener("input", e => { state.fps = parseInt(e.target.value); $("#fpsV").textContent = e.target.value; });
+
+/* ============================ render loop ============================ */
+function render(ctx,t,W,H){
+  ctx.fillStyle = state.bg;
+  ctx.fillRect(0,0,W,H);
+  TEMPLATES[state.template].draw(ctx,t,P(),W,H);
+  if (state.title) text(ctx, state.title, W/2, 26*(W/800), {size:20*(W/800), bold:true, color:state.titleColor});
+}
+
+const cv = $("#canvas");
+const cctx = cv.getContext("2d");
+let lastT = 0;
+function tick(now){
+  if (cv.width  !== state.width)  cv.width  = state.width;
+  if (cv.height !== state.height) cv.height = state.height;
+  lastT = ((now/1000) % state.duration) / state.duration;
+  render(cctx, lastT, state.width, state.height);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+/* ============================ export ============================ */
+async function buildGif(onProgress){
+  const W = state.width, H = state.height;
+  const frames = Math.max(2, Math.round(state.fps * state.duration));
+  const oc = document.createElement("canvas"); oc.width = W; oc.height = H;
+  const ctx = oc.getContext("2d", {willReadFrequently:true});
+  const enc = new GifEncoder(W, H, state.fps);
+  for (let f=0; f<frames; f++){
+    render(ctx, f/frames, W, H);
+    enc.addFrame(ctx.getImageData(0,0,W,H));
+    if (onProgress){ onProgress((f+1)/frames); await new Promise(r => setTimeout(r)); }
+  }
+  return enc.finish();
+}
+
+$("#exportBtn").addEventListener("click", async () => {
+  const btn = $("#exportBtn"), bar = $("#prog"), st = $("#status");
+  btn.disabled = true; bar.hidden = false; st.textContent = "Rendering frames…";
+  try {
+    const bytes = await buildGif(p => { bar.value = p; });
+    const blob = new Blob([bytes], {type:"image/gif"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = state.template + "-schematic.gif";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    st.textContent = `Done — ${(blob.size/1024).toFixed(0)} KB, ${Math.round(state.fps*state.duration)} frames, loops forever.`;
+  } catch (e){
+    st.textContent = "Export failed: " + e.message;
+  } finally {
+    btn.disabled = false; bar.hidden = true; bar.value = 0;
+  }
+});
+
+$("#pngBtn").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = cv.toDataURL("image/png");
+  a.download = state.template + "-frame.png";
+  a.click();
+});
+</script>
+</body>
+</html>
