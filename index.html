@@ -393,6 +393,119 @@ function drawMembrane(ctx,t,P,W,H){
   text(ctx, P.membLabel, W*0.915, myB+32*s, {size:13*s, color:"#334155"});
 }
 
+function drawCrumpled(ctx,t,P,W,H){
+  const s = W/800;
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  const hA = Math.max(...gA.atoms.map(a => Math.abs(a.dy)+a.r));
+  const hB = Math.max(...gB.atoms.map(a => Math.abs(a.dy)+a.r));
+  // crumpled laminate: the interlayer gap breathes between compact (sieving)
+  // domains at the troughs and expanded (fast-uptake) pockets at the crests
+  const mx0 = W*0.12, mx1 = W*0.88, L = mx1-mx0;
+  const nCr = P.crumples, nL = 4;
+  const myC = H*0.58, Aw = 9*s;
+  const gapX = (2*hB+9)*s;
+  const gapC = Math.max(2*hA+1, Math.min(2*hA+2.5, 2*hB-1.5))*s;
+  const phase = x => 2*Math.PI*nCr*(x-mx0)/L - Math.PI;
+  const gap = x => gapC + (gapX-gapC)*(0.5+0.5*Math.cos(phase(x)));
+  const yMid = x => myC - Aw*Math.cos(phase(x));
+  const sheetY = (k,x) => yMid(x) + (k-(nL-1)/2)*gap(x);
+  const crest = j => mx0 + L*(j+0.5)/nCr;
+  const troughs = []; for (let j=1;j<nCr;j++) troughs.push(mx0 + L*j/nCr);
+  const feedY0 = H*0.17, feedY1 = myC - Aw - (nL-1)/2*gapX - 14*s;
+  const permY1 = H*0.86, xIn = W*0.02, xOut = W*0.98;
+  // wide uptake holes into the pockets (top two sheets), narrow sieve holes at the troughs
+  const we = (gB.w+8)*s, ws = (gA.w+4)*s;
+  const inHole = (k,x) => {
+    if (k < 2){ for (let j=0;j<nCr;j++) if (Math.abs(x-crest(j)) < we/2) return true; }
+    else { for (const tx of troughs) if (Math.abs(x-tx) < ws/2) return true; }
+    return false;
+  };
+  ctx.globalAlpha = 0.13; ctx.fillStyle = P.membraneColor;
+  ctx.beginPath();
+  for (let x=mx0; x<=mx1; x+=4*s) ctx.lineTo(x, sheetY(0,x));
+  for (let x=mx1; x>=mx0; x-=4*s) ctx.lineTo(x, sheetY(nL-1,x));
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 1; ctx.lineCap = "round"; ctx.lineWidth = 3.2*s;
+  for (let k=0;k<nL;k++){
+    ctx.strokeStyle = shade(P.membraneColor, (k%2)*24);
+    ctx.beginPath();
+    let pen = false;
+    for (let x=mx0; x<=mx1; x+=3*s){
+      if (inHole(k,x)){ pen = false; continue; }
+      if (pen) ctx.lineTo(x, sheetY(k,x));
+      else { ctx.moveTo(x, sheetY(k,x)); pen = true; }
+    }
+    ctx.stroke();
+  }
+  // permeate: along the feed, drop into an expanded pocket, ride the interlayer
+  // channel to a compact trough, then thread the sieve holes end-on
+  const permeatePath = (q,u) => {
+    const j = Math.floor(rnd(q+1)*nCr);
+    const ex = crest(j);
+    const xx = mx0 + L*(j < nCr-1 ? j+1 : j)/nCr;
+    const yF = feedY0 + 8*s + rnd(q+2)*(feedY1-feedY0-16*s);
+    const L1 = ex - xIn, L2 = yMid(ex) - yF, L3 = Math.abs(xx-ex);
+    const yBot = sheetY(nL-1, xx);
+    const d = u*(L1+L2+L3+(permY1-yMid(xx)));
+    const jig = Math.sin(2*Math.PI*((2+Math.floor(rnd(q+3)*3))*t + rnd(q+4)));
+    if (d < L1) return [xIn+d, yF + clamp((L1-d)/(80*s),0,1)*jig*4*s, 0];
+    if (d < L1+L2) return [ex, yF + (d-L1), 0];
+    if (d < L1+L2+L3){
+      const x = ex + Math.sign(xx-ex)*(d-L1-L2);
+      return [x, yMid(x), 0];
+    }
+    const d4 = d-L1-L2-L3, y = yMid(xx) + d4;
+    const ang = (Math.PI/2)*smooth(d4/Math.max(yBot-yMid(xx),1));
+    return [xx + clamp((y-yBot)/(60*s),0,1)*jig*3*s, y, ang];
+  };
+  // retentate: straight across the feed; clear>0 adds a blocked dip at the wavy top sheet
+  const acrossPath = (q,u,clear) => {
+    const x = xIn + u*(xOut-xIn);
+    const yBase = feedY0 + 12*s + rnd(q+1)*(feedY1-feedY0-24*s);
+    let y = yBase, bump = 0;
+    if (clear > 0){
+      const tryX = mx0 + (0.15 + 0.7*rnd(q+2))*L;
+      const sig = W*0.045;
+      bump = Math.exp(-((x-tryX)**2)/(2*sig*sig));
+      y = yBase + (sheetY(0,tryX) - clear - yBase)*bump;
+    }
+    y += (1-bump)*Math.sin(2*Math.PI*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*5*s;
+    return [x, y, 0];
+  };
+  for (let i=0;i<P.nA;i++){
+    const q = i*5+11;
+    const u = (rnd(q) + t*P.speed) % 1;
+    const p = rnd(q+6)*100 < P.permA ? permeatePath(q,u) : acrossPath(q,u,0);
+    drawGasMol(ctx, gA, p[0], p[1], s, p[2]);
+  }
+  for (let i=0;i<P.nB;i++){
+    const q = i*9+51;
+    const u = (rnd(q) + t*P.speed) % 1;
+    const p = rnd(q+6)*100 < P.permB ? permeatePath(q,u) : acrossPath(q,u,(hB+3)*s);
+    drawGasMol(ctx, gB, p[0], p[1], s, p[2]);
+  }
+  // labels + flow arrows ("auto" composes from the selected gases)
+  const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
+  const retLabel  = P.retLabel  === "auto" ? gB.label+"-rich retentate"     : P.retLabel;
+  const permLabel = P.permLabel === "auto" ? gA.label+"-rich permeate"      : P.permLabel;
+  const ay = H*0.115;
+  text(ctx, feedLabel, W*0.11, ay-16*s, {size:15*s, bold:true, color:"#334155"});
+  arrow(ctx, W*0.045, ay, W*0.165, ay, "#334155", 3*s, 8*s);
+  text(ctx, retLabel, W*0.885, ay-16*s, {size:15*s, bold:true, color:gB.tint});
+  arrow(ctx, W*0.83, ay, W*0.95, ay, gB.tint, 3*s, 8*s);
+  arrow(ctx, W*0.5, H*0.885, W*0.5, H*0.945, gA.tint, 3*s, 8*s);
+  text(ctx, permLabel, W*0.5+16*s, H*0.915, {size:15*s, bold:true, color:gA.tint, align:"left"});
+  // domain + membrane callouts
+  ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
+  ctx.beginPath(); ctx.moveTo(crest(0), sheetY(nL-1,crest(0))+4*s); ctx.lineTo(W*0.145, H*0.755); ctx.stroke();
+  text(ctx, P.expLabel, W*0.03, H*0.79, {size:12.5*s, color:"#334155", align:"left"});
+  const lastTr = troughs[troughs.length-1];
+  ctx.beginPath(); ctx.moveTo(lastTr+ws/2+4*s, sheetY(nL-1,lastTr)+4*s); ctx.lineTo(W*0.80, H*0.755); ctx.stroke();
+  text(ctx, P.selLabel, W*0.975, H*0.79, {size:12.5*s, color:"#334155", align:"right"});
+  ctx.beginPath(); ctx.moveTo(mx1-2*s, yMid(mx1)); ctx.lineTo(W*0.93, H*0.62); ctx.stroke();
+  text(ctx, P.membLabel, W*0.975, H*0.65, {size:13*s, color:"#334155", align:"right"});
+}
+
 function drawSurface(ctx,t,P,W,H){
   const s = W/800;
   const ar = 15*s, surfY = H*0.74;
@@ -584,6 +697,28 @@ const TEMPLATES = {
       {key:"retLabel",      label:"Retentate label",     type:"text",  def:"auto"},
       {key:"permLabel",     label:"Permeate label",      type:"text",  def:"auto"},
       {key:"membLabel",     label:"Membrane label",      type:"text",  def:"GO membrane"},
+    ],
+  },
+  crumpled: {
+    name: "Crumpled GO membrane (cGO)",
+    desc: "Strain-crumpled GO laminate with a multidomain structure: expanded interlayer pockets give fast gas uptake, compact domains act as molecular sieves. Gas A threads through the sieve to the permeate; gas B is mostly blocked and swept to the retentate. Defaults show H₂/CO₂ separation (Zhang et al., Nat. Nanotechnol. 2025, H₂/CO₂ selectivity ≈ 91).",
+    draw: drawCrumpled,
+    params: [
+      {key:"gasA",          label:"Gas A (small)",       type:"select", def:"H2",  options:GAS_OPTIONS},
+      {key:"gasB",          label:"Gas B (large)",       type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"permA",         label:"Gas A permeated (%)", type:"range", min:0, max:100, step:5, def:90},
+      {key:"permB",         label:"Gas B permeated (%)", type:"range", min:0, max:100, step:5, def:5},
+      {key:"membraneColor", label:"Membrane",            type:"color", def:"#92400e"},
+      {key:"crumples",      label:"Crumples",            type:"range", min:2, max:5, step:1, def:3},
+      {key:"nA",            label:"Gas A molecules",     type:"range", min:4, max:30, step:1, def:14},
+      {key:"nB",            label:"Gas B molecules",     type:"range", min:2, max:15, step:1, def:8},
+      {key:"speed",         label:"Flow speed",          type:"range", min:1, max:3, step:1, def:1},
+      {key:"feedLabel",     label:"Feed label",          type:"text",  def:"auto"},
+      {key:"retLabel",      label:"Retentate label",     type:"text",  def:"auto"},
+      {key:"permLabel",     label:"Permeate label",      type:"text",  def:"auto"},
+      {key:"membLabel",     label:"Membrane label",      type:"text",  def:"crumpled GO (cGO) membrane"},
+      {key:"expLabel",      label:"Expanded label",      type:"text",  def:"expanded domains: fast uptake"},
+      {key:"selLabel",      label:"Compact label",       type:"text",  def:"compact domains: molecular sieve"},
     ],
   },
   surface: {
