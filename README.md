@@ -17,7 +17,7 @@ python -m http.server 8321 --directory C:/Users/MrBo/sci-gif-studio
 | Template | Shows |
 |---|---|
 | Flow reactor (packed bed) | Gas molecules flowing through a catalyst bed, changing color as they convert (defaults set up for CO₂ methanation: CO₂ + 4 H₂ → CH₄ + 2 H₂O over Ni/Al₂O₃) |
-| Gas separation membrane (2D) | Small molecules permeating through membrane nanochannels while larger ones bounce back (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
+| Gas separation membrane (2D) | Feed flowing over a horizontal membrane: small molecules pass through the pores to the permeate below, larger ones are blocked and swept to the retentate (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
 | Catalyst surface reaction | Adsorption → surface reaction (color change) → desorption on an atomic surface |
 | Particle diffusion | Brownian-style particle motion in a container |
 | Reaction energy diagram | A marker crossing the activation barrier, with Ea and ΔE annotations |

@@ -266,37 +266,34 @@ function drawFlow(ctx,t,P,W,H){
 
 function drawMembrane(ctx,t,P,W,H){
   const s = W/800;
-  const top = H*0.22, bot = H*0.86;
-  const mx = W*0.5, mw = 30*s;
-  const x0 = W*0.05, x1 = W*0.95;
-  // chamber walls
-  ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 2*s; ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(x0,top); ctx.lineTo(x1,top);
-  ctx.moveTo(x0,bot); ctx.lineTo(x1,bot);
-  ctx.stroke();
-  // nanochannel (pore) positions along the membrane
+  // horizontal membrane slab; feed flows above it, permeate drops below
+  const mx0 = W*0.14, mx1 = W*0.86;
+  const myT = H*0.54, mt = 26*s, myB = myT + mt;
+  const feedY0 = H*0.20, feedY1 = myT - 16*s;
+  const permY1 = H*0.86;
+  const xIn = W*0.02, xOut = W*0.98;
+  // pore gap: wider than the small molecule (~13*s) but narrower than the big one (~26*s)
+  const pw = 18*s;
+  const rA = 3.5*s, rB = 4.5*s;
   const nP = P.pores;
-  const poreYs = [];
-  for (let i=0;i<nP;i++) poreYs.push(top + (bot-top)*(i+1)/(nP+1));
-  const poreH = Math.min(15*s, (bot-top)/(nP+1)*0.38);
-  // membrane: filled segments between pores, with staggered GO-flake lamellae
-  const edges = [top, ...poreYs.flatMap(y=>[y-poreH, y+poreH]), bot];
-  ctx.fillStyle = P.membraneColor;
+  const poreXs = [];
+  for (let i=0;i<nP;i++) poreXs.push(mx0 + (mx1-mx0)*(i+1)/(nP+1));
+  // membrane slab segments between pores, with stacked GO-sheet texture
+  const edges = [mx0, ...poreXs.flatMap(x=>[x-pw/2, x+pw/2]), mx1];
   for (let k=0;k<edges.length;k+=2){
-    const y0 = edges[k], y1 = edges[k+1];
+    const a = edges[k], b = edges[k+1];
+    ctx.fillStyle = P.membraneColor;
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(mx-mw/2, y0, mw, y1-y0, 3*s);
-    else ctx.rect(mx-mw/2, y0, mw, y1-y0);
+    if (ctx.roundRect) ctx.roundRect(a, myT, b-a, mt, 3*s);
+    else ctx.rect(a, myT, b-a, mt);
     ctx.fill();
-    // stacked-sheet texture (graphene oxide laminate)
     ctx.strokeStyle = shade(P.membraneColor, 60); ctx.lineWidth = 1.5*s;
-    for (let c=0;c<3;c++){
-      const lx = mx - mw/2 + mw*(c+1)/4;
-      const stag = (c%2)*7*s;
+    for (let r=1;r<=3;r++){
+      const ly = myT + mt*r/4;
+      const stag = (r%2)*8*s;
       ctx.beginPath();
-      for (let y = y0+3*s+stag; y < y1-3*s; y += 14*s){
-        ctx.moveTo(lx, y); ctx.lineTo(lx, Math.min(y+9*s, y1-3*s));
+      for (let x = a+3*s+stag; x < b-3*s; x += 16*s){
+        ctx.moveTo(x, ly); ctx.lineTo(Math.min(x+10*s, b-3*s), ly);
       }
       ctx.stroke();
     }
@@ -304,55 +301,60 @@ function drawMembrane(ctx,t,P,W,H){
   // molecule drawing helpers
   const drawA = (x,y) => {              // small permeating molecule (H2)
     ctx.fillStyle = P.gasAColor;
-    ctx.beginPath(); ctx.arc(x-3.5*s, y, 4*s, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+3.5*s, y, 4*s, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x-3*s, y, rA, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+3*s, y, rA, 0, 7); ctx.fill();
   };
-  const drawB = (x,y) => {              // large rejected molecule (CO2, linear O=C=O)
+  const drawB = (x,y) => {              // large blocked molecule (CO2, linear O=C=O)
     ctx.fillStyle = P.gasBOColor;
-    ctx.beginPath(); ctx.arc(x-8*s, y, 4.5*s, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+8*s, y, 4.5*s, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x-8.5*s, y, rB, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+8.5*s, y, rB, 0, 7); ctx.fill();
     ctx.fillStyle = P.gasBCColor;
     ctx.beginPath(); ctx.arc(x, y, 5.5*s, 0, 7); ctx.fill();
   };
-  // permeating molecules: stream left->right, funneling through an assigned pore
-  const zone = W*0.16;
+  // small molecules: flow right along the feed, turn down through a pore, exit below
   for (let i=0;i<P.nA;i++){
     const q = i*5+11;
     const u = (rnd(q) + t*P.speed) % 1;
-    const x = x0 + 10*s + u*(x1-x0-20*s);
-    const pore = poreYs[Math.floor(rnd(q+1)*nP)];
-    const yF = top + poreH + rnd(q+2)*(bot-top-2*poreH);
-    const yP = top + poreH + rnd(q+3)*(bot-top-2*poreH);
-    let y;
-    if (x < mx - zone) y = yF;
-    else if (x < mx) y = lerp(yF, pore, smooth((x-(mx-zone))/zone));
-    else if (x < mx + zone) y = lerp(pore, yP, smooth((x-mx)/zone));
-    else y = yP;
-    const far = clamp(Math.abs(x-mx)/zone, 0, 1);   // no jiggle inside the channel
-    const fq = 2 + Math.floor(rnd(q+4)*3);
-    y += far*Math.sin(2*Math.PI*(fq*t + rnd(q+5)))*4*s;
+    const pore = poreXs[Math.floor(rnd(q+1)*nP)];
+    const yF = feedY0 + 8*s + rnd(q+2)*(feedY1-feedY0-16*s);
+    const L1 = pore - xIn, L2 = permY1 - yF;
+    const d = u*(L1+L2);
+    const jig = Math.sin(2*Math.PI*((2+Math.floor(rnd(q+3)*3))*t + rnd(q+4)));
+    let x, y;
+    if (d < L1){                        // horizontal leg in the feed stream
+      x = xIn + d; y = yF;
+      y += clamp((L1-d)/(80*s),0,1)*jig*4*s;
+    } else {                            // vertical leg: through the pore, down to permeate
+      x = pore; y = yF + (d - L1);
+      x += clamp((y-myB)/(60*s),0,1)*jig*3*s;
+    }
     drawA(x,y);
   }
-  // rejected molecules: approach the membrane and bounce back (feed side only)
+  // large molecules: too big for the pores — dip at the membrane, then sweep to retentate
   for (let i=0;i<P.nB;i++){
     const q = i*9+51;
-    const A = (mx - mw/2 - x0 - 40*s)*(0.35 + 0.6*rnd(q));
-    const f = 1 + Math.floor(rnd(q+1)*2);
-    const prox = Math.abs(Math.sin(Math.PI*(f*t + rnd(q+2))));  // 0 = touching membrane
-    const x = mx - mw/2 - 16*s - A*prox;
-    const fy = 1 + Math.floor(rnd(q+4)*2);
-    const y = top + 24*s + rnd(q+3)*(bot-top-48*s)
-            + Math.sin(2*Math.PI*(fy*t + rnd(q+5)))*6*s;
+    const u = (rnd(q) + t*P.speed) % 1;
+    const x = xIn + u*(xOut-xIn);
+    const yBase = feedY0 + 12*s + rnd(q+1)*(feedY1-feedY0-24*s);
+    const tryX = mx0 + (0.15 + 0.7*rnd(q+2))*(mx1-mx0);
+    const sig = W*0.045;
+    const bump = Math.exp(-((x-tryX)**2)/(2*sig*sig));   // blocked attempt at the membrane
+    let y = yBase + (myT - rB - 3*s - yBase)*bump;
+    y += (1-bump)*Math.sin(2*Math.PI*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*5*s;
     drawB(x,y);
   }
   // labels + flow arrows
-  const ly = top - 20*s;
-  const lxi = (x0+mx)/2 - mw, lxo = (mx+x1)/2 + mw;
-  text(ctx, P.feedLabel, lxi, ly-14*s, {size:15*s, bold:true, color:"#334155"});
-  arrow(ctx, lxi-24*s, ly, lxi+24*s, ly, "#334155", 3*s, 8*s);
-  text(ctx, P.permLabel, lxo, ly-14*s, {size:15*s, bold:true, color:P.gasAColor});
-  arrow(ctx, lxo-24*s, ly, lxo+24*s, ly, P.gasAColor, 3*s, 8*s);
-  text(ctx, P.membLabel, mx, bot+22*s, {size:14*s, color:"#334155"});
+  const ay = H*0.135;
+  text(ctx, P.feedLabel, W*0.11, ay-16*s, {size:15*s, bold:true, color:"#334155"});
+  arrow(ctx, W*0.045, ay, W*0.165, ay, "#334155", 3*s, 8*s);
+  text(ctx, P.retLabel, W*0.885, ay-16*s, {size:15*s, bold:true, color:P.gasBOColor});
+  arrow(ctx, W*0.83, ay, W*0.95, ay, P.gasBOColor, 3*s, 8*s);
+  arrow(ctx, W*0.5, H*0.885, W*0.5, H*0.945, P.gasAColor, 3*s, 8*s);
+  text(ctx, P.permLabel, W*0.5+16*s, H*0.915, {size:15*s, bold:true, color:P.gasAColor, align:"left"});
+  // membrane callout
+  ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
+  ctx.beginPath(); ctx.moveTo(mx1-6*s, myB+2*s); ctx.lineTo(W*0.905, myB+22*s); ctx.stroke();
+  text(ctx, P.membLabel, W*0.915, myB+32*s, {size:13*s, color:"#334155"});
 }
 
 function drawSurface(ctx,t,P,W,H){
@@ -530,20 +532,21 @@ const TEMPLATES = {
   },
   membrane: {
     name: "Gas separation membrane (2D)",
-    desc: "Small gas molecules permeate through membrane nanochannels while larger ones bounce back. Defaults show H₂/CO₂ separation through a graphene oxide (GO) membrane.",
+    desc: "Feed flows over a horizontal membrane: small molecules fit through the pores to the permeate below, larger ones are blocked and swept to the retentate. Defaults show H₂/CO₂ separation through a graphene oxide (GO) membrane.",
     draw: drawMembrane,
     params: [
       {key:"gasAColor",     label:"H₂ (permeating)", type:"color", def:"#2563eb"},
       {key:"gasBCColor",    label:"CO₂ carbon",      type:"color", def:"#334155"},
       {key:"gasBOColor",    label:"CO₂ oxygen",      type:"color", def:"#dc2626"},
       {key:"membraneColor", label:"Membrane",        type:"color", def:"#92400e"},
-      {key:"pores",         label:"Nanochannels",    type:"range", min:2, max:6, step:1, def:4},
+      {key:"pores",         label:"Pores",           type:"range", min:2, max:6, step:1, def:4},
       {key:"nA",            label:"H₂ molecules",    type:"range", min:4, max:30, step:1, def:14},
       {key:"nB",            label:"CO₂ molecules",   type:"range", min:2, max:15, step:1, def:7},
-      {key:"speed",         label:"Permeation speed",type:"range", min:1, max:3, step:1, def:1},
+      {key:"speed",         label:"Flow speed",      type:"range", min:1, max:3, step:1, def:1},
       {key:"feedLabel",     label:"Feed label",      type:"text",  def:"H₂ + CO₂ feed"},
+      {key:"retLabel",      label:"Retentate label", type:"text",  def:"CO₂ retentate"},
       {key:"permLabel",     label:"Permeate label",  type:"text",  def:"H₂ permeate"},
-      {key:"membLabel",     label:"Membrane label",  type:"text",  def:"Graphene oxide (GO) membrane"},
+      {key:"membLabel",     label:"Membrane label",  type:"text",  def:"GO membrane"},
     ],
   },
   surface: {
