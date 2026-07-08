@@ -506,6 +506,150 @@ function drawCrumpled(ctx,t,P,W,H){
   text(ctx, P.membLabel, W*0.975, H*0.65, {size:13*s, color:"#334155", align:"right"});
 }
 
+function drawPSA(ctx,t,P,W,H){
+  const s = W/800;
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  // twin-bed PSA: each half of the loop one column adsorbs gas B at high
+  // pressure while the other is blown down at low pressure, then they swap
+  const cw = W*0.13, yT = H*0.25, yB = H*0.73;
+  const cx = [W*0.33, W*0.67];
+  const prodY = H*0.115, feedY = H*0.845, offY = H*0.945;
+  const xIn = -30*s, xL = W*0.03, xR = W*0.955, xOut = W + 30*s;
+  const pr0 = smooth(t/0.07) - smooth((t-0.5)/0.07);
+  const press = c => c === 0 ? pr0 : 1 - pr0;
+  const uh = (2*t) % 1, adsCol = t < 0.5 ? 0 : 1;
+  const bRows = 7, bCols = 3, nBeads = bRows*bCols, bR = 8.5*s;
+  const beadPos = (c,bi) => {
+    const r = Math.floor(bi/bCols), k = bi%bCols;
+    return [cx[c] + (k-1)*30*s + (rnd(c*97+bi*3)*2-1)*4*s,
+            yT + 20*s + r*(yB-yT-40*s)/(bRows-1) + (rnd(c*97+bi*3+1)*2-1)*3*s];
+  };
+  // piping: gray base, dark overlay on the segments whose valves are open
+  const pipe = (x1,y1,x2,y2) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); };
+  ctx.lineCap = "round"; ctx.lineWidth = 5*s; ctx.strokeStyle = "#cbd5e1";
+  pipe(xL, feedY, cx[1], feedY);
+  pipe(cx[0], offY, xR, offY);
+  pipe(cx[0], prodY, xR, prodY);
+  for (const c of [0,1]){ pipe(cx[c], yB+8*s, cx[c], offY); pipe(cx[c], prodY, cx[c], yT-8*s); }
+  ctx.strokeStyle = "#64748b";
+  for (const c of [0,1]){
+    ctx.globalAlpha = press(c);      // feed + product path open while adsorbing
+    pipe(xL, feedY, cx[c], feedY);
+    pipe(cx[c], feedY, cx[c], yB+8*s);
+    pipe(cx[c], yT-8*s, cx[c], prodY);
+    pipe(cx[c], prodY, xR, prodY);
+    ctx.globalAlpha = 1 - press(c);  // blowdown path open while regenerating
+    pipe(cx[c], yB+8*s, cx[c], offY);
+    pipe(cx[c], offY, xR, offY);
+  }
+  ctx.globalAlpha = 1;
+  // domed column shells + adsorbent beads
+  for (const c of [0,1]){
+    const x0 = cx[c]-cw/2, x1 = cx[c]+cw/2;
+    ctx.beginPath();
+    ctx.moveTo(x0, yT+10*s);
+    ctx.quadraticCurveTo(x0, yT-10*s, cx[c], yT-10*s);
+    ctx.quadraticCurveTo(x1, yT-10*s, x1, yT+10*s);
+    ctx.lineTo(x1, yB-10*s);
+    ctx.quadraticCurveTo(x1, yB+10*s, cx[c], yB+10*s);
+    ctx.quadraticCurveTo(x0, yB+10*s, x0, yB-10*s);
+    ctx.closePath();
+    ctx.fillStyle = P.colColor; ctx.globalAlpha = 0.06 + 0.08*press(c);
+    ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = P.colColor; ctx.lineWidth = 3*s; ctx.stroke();
+    for (let bi=0; bi<nBeads; bi++){
+      const bp = beadPos(c,bi);
+      ctx.fillStyle = shade(P.bedColor, (bi%2)*22);
+      ctx.beginPath(); ctx.arc(bp[0],bp[1],bR,0,7); ctx.fill();
+    }
+  }
+  // pressure gauges: the needle swings between L and H each half cycle
+  for (const c of [0,1]){
+    const gx = cx[c]-cw/2-26*s, gy = yT+16*s, gr = 15*s;
+    ctx.strokeStyle = "#64748b"; ctx.lineWidth = 2*s;
+    ctx.beginPath(); ctx.moveTo(gx+gr, gy); ctx.lineTo(cx[c]-cw/2, gy); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#475569";
+    ctx.beginPath(); ctx.arc(gx,gy,gr,0,7); ctx.fill(); ctx.stroke();
+    text(ctx,"L",gx-gr*0.55,gy+gr*0.5,{size:7.5*s,color:"#94a3b8"});
+    text(ctx,"H",gx+gr*0.55,gy+gr*0.5,{size:7.5*s,color:"#94a3b8"});
+    const ga = lerp(2.55, 0.6, press(c));
+    ctx.strokeStyle = "#dc2626"; ctx.lineWidth = 2*s;
+    ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(gx+Math.cos(ga)*gr*0.7, gy-Math.sin(ga)*gr*0.7); ctx.stroke();
+    ctx.fillStyle = "#475569"; ctx.beginPath(); ctx.arc(gx,gy,2.2*s,0,7); ctx.fill();
+  }
+  // gas B: flies in with the feed and sticks to a bead while its column is at
+  // high P; when the column blows down it releases and leaves as off-gas
+  for (let i=0;i<P.nB;i++){
+    const c = i % 2, q = i*11+31, jx = cx[c];
+    const tb = beadPos(c, Math.floor(rnd(q+1)*nBeads));
+    const bx = tb[0] + (rnd(q+7)*2-1)*6*s, by = tb[1] - 4*s + (rnd(q+8)*2-1)*5*s;
+    let x, y, sf;
+    if ((t < 0.5) === (c === 0)){
+      const p = clamp((uh - 0.05 - 0.45*rnd(q+2))/0.32, 0, 1);
+      const L1 = jx - xIn, L2 = feedY - yB, L3 = yB - by;
+      const d = smooth(p)*(L1+L2+L3+Math.abs(bx-jx));
+      if (d < L1){ x = xIn + d; y = feedY; }
+      else if (d < L1+L2){ x = jx; y = feedY - (d-L1); }
+      else if (d < L1+L2+L3){ x = jx; y = yB - (d-L1-L2); }
+      else { x = jx + Math.sign(bx-jx)*(d-L1-L2-L3); y = by; }
+      sf = smooth((p-0.85)/0.15);
+    } else {
+      const p = clamp((uh - 0.06 - 0.4*rnd(q+3))/0.34, 0, 1);
+      const L1 = Math.abs(bx - jx), L2 = offY - by;
+      const d = smooth(p)*(L1+L2+xOut-jx);
+      if (d < L1){ x = bx - Math.sign(bx-jx)*d; y = by; }
+      else if (d < L1+L2){ x = jx; y = by + (d-L1); }
+      else { x = jx + (d-L1-L2); y = offY; }
+      sf = 1 - smooth(p/0.12);
+    }
+    x += Math.sin(6.283*(3*t + rnd(q+4)))*1.4*s*sf;
+    y += Math.cos(6.283*(2*t + rnd(q+5)))*1.4*s*sf;
+    drawGasMol(ctx, gB, x, y, s, 0);
+  }
+  // gas A: streams through the adsorbing column to the product line, fading
+  // out around the half-cycle boundary while the valves switch over
+  const aWin = smooth(Math.min(uh, 1-uh)/0.09);
+  const jx = cx[adsCol];
+  const A1 = jx - xIn, A2 = feedY - yB, A3 = yB - yT, A4 = yT - prodY;
+  const tot = A1+A2+A3+A4+xOut-jx;
+  ctx.globalAlpha = aWin;
+  for (let i=0;i<P.nA;i++){
+    const q = i*7+13;
+    const d = ((rnd(q) + uh*(P.speed+1)) % 1) * tot;
+    let x, y;
+    if (d < A1){ x = xIn + d; y = feedY; }
+    else if (d < A1+A2){ x = jx; y = feedY - (d-A1); }
+    else if (d < A1+A2+A3){
+      y = yB - (d-A1-A2);
+      x = jx + Math.sin((yB-y)/(26*s) + rnd(q+5)*6.283) * cw*0.26;
+    }
+    else if (d < A1+A2+A3+A4){ x = jx; y = yT - (d-A1-A2-A3); }
+    else { x = jx + (d-A1-A2-A3-A4); y = prodY; }
+    drawGasMol(ctx, gA, x, y, s, 0);
+  }
+  ctx.globalAlpha = 1;
+  // labels + stream arrows ("auto" composes from the selected gases)
+  const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
+  const prodLabel = P.prodLabel === "auto" ? gA.label+" product" : P.prodLabel;
+  const offLabel  = P.offLabel  === "auto" ? gB.label+"-rich off-gas" : P.offLabel;
+  arrow(ctx, xL, feedY, xL+40*s, feedY, "#334155", 3.5*s, 9*s);
+  text(ctx, feedLabel, W*0.035, feedY-17*s, {size:14.5*s, bold:true, color:"#334155", align:"left"});
+  arrow(ctx, xR-34*s, prodY, xR, prodY, gA.tint, 3.5*s, 9*s);
+  text(ctx, prodLabel, W*0.965, prodY-16*s, {size:14.5*s, bold:true, color:gA.tint, align:"right"});
+  arrow(ctx, xR-34*s, offY, xR, offY, gB.tint, 3.5*s, 9*s);
+  text(ctx, offLabel, W*0.965, offY-15*s, {size:14.5*s, bold:true, color:gB.tint, align:"right"});
+  // column state labels crossfade at each swap
+  for (const c of [0,1]){
+    const p = press(c);
+    if (p > 0.02){ ctx.globalAlpha = p; text(ctx, P.hiLabel, cx[c], H*0.79, {size:12.5*s, bold:true, color:"#b91c1c"}); }
+    if (p < 0.98){ ctx.globalAlpha = 1-p; text(ctx, P.loLabel, cx[c], H*0.79, {size:12.5*s, bold:true, color:"#1d4ed8"}); }
+    ctx.globalAlpha = 1;
+  }
+  ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
+  ctx.beginPath(); ctx.moveTo(cx[0]-cw/2-2*s, H*0.52); ctx.lineTo(W*0.145, H*0.56); ctx.stroke();
+  text(ctx, P.bedLabel, W*0.03, H*0.585, {size:12.5*s, color:"#334155", align:"left"});
+}
+
 function drawSurface(ctx,t,P,W,H){
   const s = W/800;
   const ar = 15*s, surfY = H*0.74;
@@ -719,6 +863,26 @@ const TEMPLATES = {
       {key:"membLabel",     label:"Membrane label",      type:"text",  def:"crumpled GO (cGO) membrane"},
       {key:"expLabel",      label:"Expanded label",      type:"text",  def:"expanded domains: fast uptake"},
       {key:"selLabel",      label:"Compact label",       type:"text",  def:"compact domains: molecular sieve"},
+    ],
+  },
+  psa: {
+    name: "Pressure swing adsorption (PSA)",
+    desc: "Twin-bed PSA cycle: one column adsorbs gas B at high pressure while gas A passes through as product; meanwhile the other column is blown down to low pressure, releasing gas B to the off-gas. The beds swap roles every half cycle — watch the gauges and valves switch. Defaults show H₂ purification with CO₂ adsorbed on a zeolite bed.",
+    draw: drawPSA,
+    params: [
+      {key:"gasA",     label:"Gas A (product)",  type:"select", def:"H2",  options:GAS_OPTIONS},
+      {key:"gasB",     label:"Gas B (adsorbed)", type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"bedColor", label:"Adsorbent",        type:"color", def:"#b45309"},
+      {key:"colColor", label:"Column",           type:"color", def:"#475569"},
+      {key:"nA",       label:"Gas A molecules",  type:"range", min:4, max:24, step:1, def:12},
+      {key:"nB",       label:"Gas B molecules",  type:"range", min:2, max:16, step:1, def:8},
+      {key:"speed",    label:"Flow speed",       type:"range", min:1, max:3, step:1, def:1},
+      {key:"feedLabel",label:"Feed label",       type:"text", def:"auto"},
+      {key:"prodLabel",label:"Product label",    type:"text", def:"auto"},
+      {key:"offLabel", label:"Off-gas label",    type:"text", def:"auto"},
+      {key:"bedLabel", label:"Adsorbent label",  type:"text", def:"zeolite adsorbent"},
+      {key:"hiLabel",  label:"High-P label",     type:"text", def:"high P · adsorbing"},
+      {key:"loLabel",  label:"Low-P label",      type:"text", def:"low P · regenerating"},
     ],
   },
   surface: {
