@@ -18,7 +18,7 @@ python -m http.server 8321 --directory .   # run from the repo folder
 |---|---|
 | Flow reactor (packed bed) | Gas molecules flowing through a catalyst bed, changing color as they convert (defaults set up for CO₂ methanation: CO₂ + 4 H₂ → CH₄ + 2 H₂O over Ni/Al₂O₃) |
 | Gas separation membrane (2D) | Small molecules permeating through membrane nanochannels while larger ones bounce back (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
-| Crumpled GO membrane (cGO) | The same separation seen in 3D: a crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ presses on the surface and bounces back (one CO₂ per loop breaks through, so the selectivity reads as finite) |
+| Crumpled GO membrane (cGO) | The same separation seen in 3D: a static crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ is turned away at the surface and sweeps off to the sides. Only the gas moves. Raise “CO₂ break-through” above 0 for a finite rather than perfect selectivity |
 | Catalyst surface reaction | Adsorption → surface reaction (color change) → desorption on an atomic surface |
 | Particle diffusion | Brownian-style particle motion in a container |
 | Reaction energy diagram | A marker crossing the activation barrier, with Ea and ΔE annotations |
@@ -43,8 +43,8 @@ Tips:
 - Lower the frame rate to ~12 fps to cut file size roughly in half.
 - Shaded 3D templates cost more than flat ones, because a continuously shaded
   surface fills the 256-colour palette and compresses poorly. The cGO template
-  at its default 700 × 620, 3 s, 20 fps gives ~1.5 MB; dropping to 12 fps gives
-  ~0.9 MB, and 12 fps at 560 × 496 gives ~0.7 MB.
+  at its default 700 × 620, 3 s, 20 fps gives 1.5 MB; dropping to 12 fps gives
+  0.93 MB, and 12 fps at 560 × 496 gives 0.70 MB.
 
 ## Adding your own template
 
