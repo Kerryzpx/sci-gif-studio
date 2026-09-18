@@ -17,8 +17,10 @@ python -m http.server 8321 --directory .   # run from the repo folder
 | Template | Shows |
 |---|---|
 | Flow reactor (packed bed) | Gas molecules flowing through a catalyst bed, changing color as they convert (defaults set up for CO₂ methanation: CO₂ + 4 H₂ → CH₄ + 2 H₂O over Ni/Al₂O₃) |
-| Gas separation membrane (2D) | Small molecules permeating through membrane nanochannels while larger ones bounce back (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
-| Crumpled GO membrane (cGO) | The same separation seen in 3D: a static crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ is turned away at the surface and sweeps off to the sides. Only the gas moves. Raise “CO₂ break-through” above 0 for a finite rather than perfect selectivity |
+| Gas separation membrane (2D) | Feed flowing over a horizontal membrane: choose any pair from H₂, He, H₂O, N₂, O₂, CO, CH₄, CO₂ and set the permeated fraction of each — permeating molecules pass through the pores, the rest are swept to the retentate (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
+| Crumpled GO membrane — cross-section (cGO) | Strain-crumpled GO laminate with a multidomain structure (Zhang et al., *Nat. Nanotechnol.* 2025): expanded interlayer pockets take gas up quickly, compact domains sieve it — gas A rides the interlayer channel and threads the sieve to the permeate, gas B is mostly swept to the retentate (defaults show H₂/CO₂) |
+| Crumpled GO membrane — 3D view (cGO) | The same separation seen in 3D: a static crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ is turned away at the surface and sweeps off to the sides. Only the gas moves. Raise “CO₂ break-through” above 0 for a finite rather than perfect selectivity |
+| Pressure swing adsorption (PSA) | Twin-bed PSA cycle: one column adsorbs gas B at high pressure while gas A passes through as product, the other is blown down at low pressure to release gas B as off-gas — beds swap every half cycle, with pressure gauges and valve highlights (defaults show H₂ purification over a zeolite bed) |
 | Catalyst surface reaction | Adsorption → surface reaction (color change) → desorption on an atomic surface |
 | Particle diffusion | Brownian-style particle motion in a container |
 | Reaction energy diagram | A marker crossing the activation barrier, with Ea and ΔE annotations |
