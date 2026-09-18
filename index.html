@@ -124,55 +124,100 @@ function vArrow2(ctx,x,ya,yb,color,s){ // vertical double-headed arrow
 }
 
 /* ============================ GIF encoder ============================ */
-/* Minimal dependency-free GIF89a encoder: local color table per frame,
-   LZW compression, infinite loop via NETSCAPE2.0 extension. */
-function quantize(img){
-  const d = img.data, n = img.width * img.height;
-  const masks = [0xFF,0xFC,0xF8,0xF0,0xE0,0xC0];
-  for (const mask of masks){
-    const off = (~mask & 0xFF) >> 1;
-    const map = new Map(), palette = [], indices = new Uint8Array(n);
-    let ok = true;
-    for (let i=0;i<n;i++){
-      const r=(d[i*4]&mask)+off, g=(d[i*4+1]&mask)+off, b=(d[i*4+2]&mask)+off;
-      const key=(r<<16)|(g<<8)|b;
-      let idx = map.get(key);
-      if (idx === undefined){
-        if (palette.length === 256){ ok=false; break; }
-        idx = palette.length; map.set(key,idx); palette.push([r,g,b]);
-      }
-      indices[i]=idx;
-    }
-    if (ok) return {palette,indices};
+/* Minimal dependency-free GIF89a encoder: ONE global color table shared by
+   every frame, LZW compression, infinite loop via NETSCAPE2.0 extension.
+
+   The palette is global on purpose. Quantizing each frame on its own makes
+   smoothly shaded templates flicker: a frame needing one colour more than fits
+   drops to a coarser uniform quantization, every colour in the picture shifts
+   at once, and the whole image pulses. A shaded 3D surface sits right on that
+   boundary, so the depth flipped dozens of times across a single export. */
+
+const HIST_BINS = 32768;                          // 5 bits per channel
+const bin5 = (r,g,b) => ((r>>3)<<10) | ((g>>3)<<5) | (b>>3);
+
+function newHistogram(){
+  return {n: new Uint32Array(HIST_BINS), sr: new Float64Array(HIST_BINS),
+          sg: new Float64Array(HIST_BINS), sb: new Float64Array(HIST_BINS)};
+}
+function addToHistogram(h, data){
+  for (let i=0;i<data.length;i+=4){
+    const r=data[i], g=data[i+1], b=data[i+2], k=bin5(r,g,b);
+    h.n[k]++; h.sr[k]+=r; h.sg[k]+=g; h.sb[k]+=b;
   }
-  throw new Error("could not quantize frame");
+}
+
+/* Median cut over the 5-bit histogram. Palette entries are the exact mean of
+   the original pixels in each box, so a flat fill that ends up alone in a box
+   comes back byte-identical rather than snapped to a bucket centre. */
+function buildPalette(h, maxColors){
+  const {n, sr, sg, sb} = h;
+  const boxOf = list => {
+    let cnt=0, R=0, G=0, B=0;
+    let rmin=31,rmax=0,gmin=31,gmax=0,bmin=31,bmax=0;
+    for (const k of list){
+      cnt += n[k]; R += sr[k]; G += sg[k]; B += sb[k];
+      const r=(k>>10)&31, g=(k>>5)&31, b=k&31;
+      if(r<rmin)rmin=r; if(r>rmax)rmax=r;
+      if(g<gmin)gmin=g; if(g>gmax)gmax=g;
+      if(b<bmin)bmin=b; if(b>bmax)bmax=b;
+    }
+    return {list, cnt, R, G, B, dr:rmax-rmin, dg:gmax-gmin, db:bmax-bmin};
+  };
+  const occupied = [];
+  for (let k=0;k<HIST_BINS;k++) if (n[k]) occupied.push(k);
+  let boxes = [boxOf(occupied)];
+  while (boxes.length < maxColors){
+    let bi = -1, best = 0;
+    for (let i=0;i<boxes.length;i++){
+      const b = boxes[i];
+      if (b.list.length < 2) continue;
+      const score = Math.max(b.dr, b.dg, b.db) * b.cnt;
+      if (score > best){ best = score; bi = i; }
+    }
+    if (bi < 0) break;                              // every box is a single bin
+    const b = boxes[bi];
+    const sh = (b.dr>=b.dg && b.dr>=b.db) ? 10 : (b.dg>=b.db ? 5 : 0);
+    const sorted = b.list.slice().sort((p,q) => ((p>>sh)&31) - ((q>>sh)&31));
+    let acc = 0, cut = 0;
+    for (; cut<sorted.length-1; cut++){ acc += n[sorted[cut]]; if (acc*2 >= b.cnt) break; }
+    if (cut >= sorted.length-1) cut = sorted.length-2;   // never split off nothing
+    boxes.splice(bi, 1, boxOf(sorted.slice(0,cut+1)), boxOf(sorted.slice(cut+1)));
+  }
+  const palette = boxes.map(b => [Math.round(b.R/b.cnt), Math.round(b.G/b.cnt),
+                                  Math.round(b.B/b.cnt)]);
+  const lut = new Uint8Array(HIST_BINS);
+  boxes.forEach((b,i) => { for (const k of b.list) lut[k] = i; });
+  return {palette, lut};
 }
 
 class GifEncoder{
-  constructor(w,h,fps){
+  constructor(w,h,fps,palette,transparentIndex){
     this.w=w; this.h=h;
     this.delay = Math.max(2, Math.round(100/fps));
+    this.tIdx = transparentIndex;
+    let bits = 2;
+    while ((1<<bits) < palette.length) bits++;
+    this.bits = bits;
+    const entries = 1<<bits;
     this.bytes=[];
     this._str("GIF89a");
     this._u16(w); this._u16(h);
-    this._b(0xF0,0,0);                 // GCT flag set, 2-entry dummy global table
-    this._b(0,0,0,255,255,255);
+    this._b(0x80 | 0x70 | (bits-1), 0, 0);        // global color table, 2^bits entries
+    for (let i=0;i<entries;i++){ const c = palette[i] || [0,0,0]; this._b(c[0],c[1],c[2]); }
     this._b(0x21,0xFF,0x0B); this._str("NETSCAPE2.0"); this._b(3,1,0,0,0); // loop forever
   }
   _b(...v){ for (const x of v) this.bytes.push(x & 255); }
   _u16(v){ this._b(v & 255, (v>>8) & 255); }
   _str(s){ for (let i=0;i<s.length;i++) this.bytes.push(s.charCodeAt(i)); }
-  addFrame(imageData){
-    const {palette,indices} = quantize(imageData);
-    let tableBits = 2;
-    while ((1<<tableBits) < palette.length) tableBits++;
-    const entries = 1<<tableBits;
-    this._b(0x21,0xF9,4,0x04, this.delay&255, (this.delay>>8)&255, 0, 0); // GCE, disposal=1
+  addFrame(indices){
+    // disposal=1 (leave the frame in place) + a transparent index, so a frame
+    // only has to carry the pixels that actually changed
+    this._b(0x21,0xF9,4,0x05, this.delay&255, (this.delay>>8)&255, this.tIdx, 0);
     this._b(0x2C); this._u16(0); this._u16(0); this._u16(this.w); this._u16(this.h);
-    this._b(0x80 | (tableBits-1));     // local color table
-    for (let i=0;i<entries;i++){ const c = palette[i] || [0,0,0]; this._b(c[0],c[1],c[2]); }
-    this._b(tableBits);                // LZW min code size
-    this._lzw(indices, tableBits);
+    this._b(0);                        // no local table: every frame shares the global one
+    this._b(this.bits);                // LZW min code size
+    this._lzw(indices, this.bits);
   }
   _lzw(indices, minCodeSize){
     const out=[];
@@ -837,7 +882,7 @@ const TEMPLATES = {
 /* ============================ state & UI ============================ */
 const state = {
   template:"flow", width:800, height:450, bg:"#ffffff",
-  duration:3, fps:20, title:"", titleColor:"#0f172a",
+  duration:3, fps:20, colors:256, title:"", titleColor:"#0f172a",
   paramsByTpl:{},
 };
 function P(){ return state.paramsByTpl[state.template]; }
@@ -930,16 +975,38 @@ function tick(now){
 requestAnimationFrame(tick);
 
 /* ============================ export ============================ */
+/* Two passes: the first collects one colour histogram over the whole animation
+   so a single palette can be chosen, the second encodes against it. Rendering
+   twice costs less than it sounds and is what keeps the colours from shifting
+   between frames. */
 async function buildGif(onProgress){
   const W = state.width, H = state.height;
   const frames = Math.max(2, Math.round(state.fps * state.duration));
   const oc = document.createElement("canvas"); oc.width = W; oc.height = H;
   const ctx = oc.getContext("2d", {willReadFrequently:true});
-  const enc = new GifEncoder(W, H, state.fps);
+
+  const hist = newHistogram();
   for (let f=0; f<frames; f++){
     render(ctx, f/frames, W, H);
-    enc.addFrame(ctx.getImageData(0,0,W,H));
-    if (onProgress){ onProgress((f+1)/frames); await new Promise(r => setTimeout(r)); }
+    addToHistogram(hist, ctx.getImageData(0,0,W,H).data);
+    if (onProgress){ onProgress((f+1)/frames*0.5); await new Promise(r => setTimeout(r)); }
+  }
+  // one slot is spent on transparency so unchanged pixels cost almost nothing
+  const {palette, lut} = buildPalette(hist, Math.max(2, state.colors - 1));
+  const tIdx = palette.length;
+  palette.push([0,0,0]);
+
+  const enc = new GifEncoder(W, H, state.fps, palette, tIdx);
+  const cur = new Uint8Array(W*H), prev = new Uint8Array(W*H), out = new Uint8Array(W*H);
+  for (let f=0; f<frames; f++){
+    render(ctx, f/frames, W, H);
+    const d = ctx.getImageData(0,0,W,H).data;
+    for (let i=0,p=0; i<d.length; i+=4,p++) cur[p] = lut[bin5(d[i],d[i+1],d[i+2])];
+    if (f === 0) out.set(cur);
+    else for (let p=0; p<cur.length; p++) out[p] = cur[p] === prev[p] ? tIdx : cur[p];
+    enc.addFrame(out);
+    prev.set(cur);
+    if (onProgress){ onProgress(0.5 + (f+1)/frames*0.5); await new Promise(r => setTimeout(r)); }
   }
   return enc.finish();
 }

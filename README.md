@@ -41,10 +41,13 @@ Tips:
   material accept GIFs directly.
 - Keep durations ≤ 5 s and the canvas ≤ 800 px wide for small file sizes.
 - Lower the frame rate to ~12 fps to cut file size roughly in half.
-- Shaded 3D templates cost more than flat ones, because a continuously shaded
-  surface fills the 256-colour palette and compresses poorly. The cGO template
-  at its default 700 × 620, 3 s, 20 fps gives 1.5 MB; dropping to 12 fps gives
-  0.93 MB, and 12 fps at 560 × 496 gives 0.70 MB.
+- What really drives file size is how much of the frame *moves*. Pixels that are
+  identical to the previous frame are written as transparent and cost almost
+  nothing, so a static background is close to free and fewer molecules means a
+  smaller file. Measured on the cGO template at 700 × 620, 3 s, 20 fps: 0.71 MB
+  with its default 18 H₂ + 9 CO₂, 0.44 MB at 12 fps. At 4 s / 30 fps but only
+  6 H₂ + 3 CO₂ it is 0.58 MB — twice the frames, still smaller, because far less
+  of each frame changes.
 
 ## Adding your own template
 
@@ -55,6 +58,11 @@ Open `index.html` and add an entry to the `TEMPLATES` object with:
   loop phase and `P` holds the current parameter values,
 - `canvas: {w, h}` — optional; the canvas size to switch to when the template is
   selected, for templates that need a shape other than the 800 × 450 default.
+
+The exporter builds one palette for the whole animation and stores each frame as
+a difference from the one before. Two consequences worth designing around: parts
+of the scene that never move are nearly free, and a `draw` that jitters every
+pixel slightly on every frame will blow up the file for no visible gain.
 
 Use only **integer multiples** of `t` inside `sin/cos` (or phase-local motion
 with fade-in/out) so the GIF loops without a visible seam.
