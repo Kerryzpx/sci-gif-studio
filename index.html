@@ -511,6 +511,199 @@ function drawCycle(ctx,t,P,W,H){
   text(ctx, P.center, cx, cy, {size:15*s, bold:true, color:"#334155"});
 }
 
+/* Crumpled GO membrane, quasi-3D. The sheet is a height field over a diamond
+   (a square flake seen in isometric view); rows are painted back-to-front so
+   the ripples occlude each other the way a real crumpled sheet does. */
+function drawCGO(ctx,t,P,W,H){
+  const s   = Math.min(W/700, H/620);
+  const TAU = Math.PI*2;
+  const cx  = W*0.5, cy = H*0.43;
+  const hx  = W*0.47, hy = H*0.125;     // half-diagonals of the sheet footprint
+  const A   = P.crumple * s;            // crumple amplitude
+  const F   = P.ripples;                // crumple density
+
+  /* Height field: a dominant static crumple plus two quadrature fields, so the
+     sheet breathes in place instead of a wave visibly travelling across it.
+     cos/sin of 1*t only -> the loop closes seamlessly. */
+  function hAt(a,b){
+    // six incommensurate directional waves -> an irregular crumple, not a plaid
+    const base = 0.44*Math.sin(TAU*F*(2.37*a + 1.61*b) + 0.3)
+               + 0.31*Math.sin(TAU*F*(1.19*a - 2.83*b) + 2.1)
+               + 0.24*Math.sin(TAU*F*(4.13*a + 3.07*b) + 4.2)
+               + 0.19*Math.sin(TAU*F*(5.71*a - 1.29*b) + 5.6)
+               + 0.13*Math.sin(TAU*F*(3.41*a + 6.89*b) + 1.4)
+               + 0.09*Math.sin(TAU*F*(8.53*a - 7.19*b) + 3.0);
+    const q1   = 0.22*Math.sin(TAU*F*(2.11*a + 3.29*b) + 0.7);
+    const q2   = 0.22*Math.sin(TAU*F*(4.07*a - 1.93*b) + 3.4);
+    return A*(0.90*base + q1*Math.cos(TAU*t) + q2*Math.sin(TAU*t));
+  }
+  // (u,v) are the on-screen diamond axes; the sheet is |u| + |v| <= 1
+  function surf(u,v){
+    const a = (u+v+1)/2, b = (v-u+1)/2, h = hAt(a,b);
+    return {x: cx + u*hx, y: cy + v*hy - h, h};
+  }
+  const span   = x => clamp(1 - Math.abs(x-cx)/hx, 0, 1);
+  const yTopAt = x => cy - hy*span(x) - A*1.7;
+  const yBotAt = x => cy + hy*span(x) + A*1.7;
+  const edge = (sign,n) => {            // -1 = back rim, +1 = front rim
+    const pts = [];
+    for (let i=0;i<=n;i++){ const u = -1 + 2*i/n; pts.push(surf(u, sign*(1-Math.abs(u)))); }
+    return pts;
+  };
+
+  /* ---- feed / permeate column -------------------------------------- */
+  const colHalf = y => W*0.175 + W*0.085*smooth((y/H - 0.38)/0.62);
+  if (P.showCol){
+    ctx.beginPath();
+    ctx.moveTo(cx-colHalf(0), 0);
+    for (let y=0;y<=H;y+=H/40) ctx.lineTo(cx-colHalf(y), y);
+    for (let y=H;y>=0;y-=H/40) ctx.lineTo(cx+colHalf(y), y);
+    ctx.closePath();
+    ctx.fillStyle = mixColor(P.h2Color, "#ffffff", 0.88); ctx.fill();
+    ctx.strokeStyle = "#a8a8a8"; ctx.lineWidth = 1.4*s;
+    ctx.beginPath();
+    ctx.moveTo(cx-colHalf(0), 0);
+    for (let y=0;y<=H;y+=H/40) ctx.lineTo(cx-colHalf(y), y);
+    ctx.moveTo(cx+colHalf(0), 0);
+    for (let y=0;y<=H;y+=H/40) ctx.lineTo(cx+colHalf(y), y);
+    ctx.stroke();
+  }
+
+  /* ---- molecule painters ------------------------------------------- */
+  function ball(x,y,r,col){
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+    ctx.strokeStyle = shade(col,-70); ctx.lineWidth = Math.max(1, 1.1*s); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath(); ctx.arc(x-r*0.32, y-r*0.34, r*0.30, 0, 7); ctx.fill();
+  }
+  function drawH2(x,y,ang,al){
+    const r = 12*s, d = r*0.74, dx = Math.cos(ang)*d, dy = Math.sin(ang)*d;
+    ctx.globalAlpha = al;
+    ball(x-dx, y-dy, r, P.h2Color);
+    ball(x+dx, y+dy, r, P.h2Color);
+    ctx.globalAlpha = 1;
+  }
+  function drawCO2(x,y,ang,al){
+    const rO = 11.5*s, rC = 12.5*s, d = rO*1.35;
+    const dx = Math.cos(ang)*d, dy = Math.sin(ang)*d;
+    ctx.globalAlpha = al;
+    ball(x-dx, y-dy, rO, P.co2OColor);
+    ball(x+dx, y+dy, rO, P.co2OColor);
+    ball(x, y, rC, P.co2CColor);
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---- H2: descend, vanish inside the laminate, re-emerge below ----- */
+  const bandT = cy - hy - A*1.7, bandB = cy + hy + A*1.7;
+  const h2 = [];
+  for (let i=0;i<P.nH2;i++){
+    const q = i*7+17;
+    const k = P.speed + Math.floor(rnd(q+1)*2);        // integer -> seamless loop
+    const p = ((i*0.618 + rnd(q)*0.25) + k*t) % 1;     // golden-ratio phases: no bunching
+    const y = lerp(-40*s, H+40*s, p);
+    const st = (i+0.5)/P.nH2 - 0.5;                    // stratified: no clumping
+    const xF = cx + (st*0.78 + (rnd(q+2)-0.5)*0.22)*W*0.30;
+    const xP = cx + (st*0.78 + (rnd(q+3)-0.5)*0.34)*W*0.42;
+    const xC = cx + (rnd(q+4)-0.5)*W*0.26;             // the nanochannel it takes
+    let x;
+    if (y < bandT)      x = xF;
+    else if (y < cy)    x = lerp(xF, xC, smooth((y-bandT)/(cy-bandT)));
+    else if (y < bandB) x = lerp(xC, xP, smooth((y-cy)/(bandB-cy)));
+    else                x = xP;
+    const free = clamp((Math.abs(y-cy) - hy)/(hy+1), 0, 1);   // no jitter in-channel
+    x += free*Math.sin(TAU*((2+Math.floor(rnd(q+5)*3))*t + rnd(q+6)))*5*s;
+    const ang = rnd(q+7)*TAU + 0.5*Math.sin(TAU*(t + rnd(q+8)));
+    const al  = clamp((H*0.80 - y)/(H*0.06), 0, 1);
+    if (al > 0.01) h2.push({x, y, ang, al, front: y >= yBotAt(x) + 5*s});
+  }
+  for (const m of h2) if (!m.front) drawH2(m.x, m.y, m.ang, m.al);
+
+  /* ---- the crumpled sheet ------------------------------------------- */
+  /* Proper mesh: each cell spans row j -> row j+1, so the cells tile the sheet
+     exactly. (A downward "skirt" per row is cheaper but smears one flat colour
+     over tens of pixels and the surface comes out blocky.) Rows go back to
+     front, so a near crest correctly hides whatever is behind it. */
+  const NB = 70, NA = 110;
+  let rowA = null;
+  for (let j=0;j<=NB;j++){
+    const v = -1 + 2*j/NB, uMax = Math.max(1e-4, 1 - Math.abs(v));
+    const rowB = [];
+    for (let i=0;i<=NA;i++) rowB.push(surf(-uMax + 2*uMax*i/NA, v));
+    if (rowA){
+      for (let i=0;i<NA;i++){
+        const a0 = rowA[i], a1 = rowA[i+1], b0 = rowB[i], b1 = rowB[i+1];
+        const dx = (a1.x - a0.x) || 1e-6;
+        const su = (a1.h - a0.h)/dx*hx/(A*F + 1e-6);      // surface normal, both axes
+        const sv = (b0.h - a0.h)*NB/2/(A*F + 1e-6);
+        // tanh keeps steep facets from clipping to flat white / flat navy
+        const f = clamp(0.50 + 0.26*Math.tanh(-(0.9*su + 0.55*sv))   // lit from upper left
+                        + 0.26*(a0.h/(A*1.6 + 1e-6)) + 0.06*(-v), 0.02, 0.98);
+        const col = mixColor(P.deepColor, P.liteColor, f);
+        ctx.fillStyle = col; ctx.strokeStyle = col; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(a0.x, a0.y); ctx.lineTo(a1.x, a1.y);
+        ctx.lineTo(b1.x, b1.y+0.8); ctx.lineTo(b0.x, b0.y+0.8);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+    }
+    rowA = rowB;
+  }
+  const front = edge(1,140);
+  ctx.strokeStyle = shade(P.deepColor,-55); ctx.lineWidth = 2.2*s;
+  ctx.lineJoin = "round"; ctx.beginPath();
+  ctx.moveTo(front[0].x, front[0].y);
+  for (const p of front) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+
+  /* ---- molecules in front of the sheet ------------------------------ */
+  for (const m of h2) if (m.front) drawH2(m.x, m.y, m.ang, m.al);
+
+  // CO2: drifts down, presses on the crumpled surface, bounces back to the feed
+  for (let i=0;i<P.nCO2;i++){
+    const q = i*13+101;
+    const k = 1 + Math.floor(rnd(q+1)*2);
+    const p = ((i*0.618 + rnd(q+2)*0.2) + k*t) % 1;    // spread so they never all land together
+    const d = smooth(1 - Math.abs(2*p-1));             // 0 = high in feed, 1 = touching
+    const st = (i+0.5)/P.nCO2 - 0.5;                   // stratified across the column
+    const x = cx + (st*0.80 + (rnd(q)-0.5)*0.26)*W*0.32
+            + Math.sin(TAU*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*7*s;
+    const yHi = H*0.095 + ((i*0.618)%1)*H*0.17;
+    const yLo = yTopAt(x) - 14*s - rnd(q+6)*H*0.05;
+    const ang = rnd(q+7)*TAU + 0.35*Math.sin(TAU*(t + rnd(q+8)));
+    drawCO2(x, lerp(yHi, yLo, d), ang, 1);
+  }
+  // the rare CO2 that does get through (finite, not infinite, selectivity)
+  for (let i=0;i<P.co2Pass;i++){
+    const q = i*17+301;
+    const p = (rnd(q) + t) % 1;
+    const x = cx + (rnd(q+1)-0.5)*W*0.22;
+    const yc = yTopAt(x) - 14*s;
+    let y;
+    if (p < 0.50)      y = lerp(-40*s, yc, smooth(p/0.50));
+    else if (p < 0.72) y = yc + Math.sin(TAU*3*((p-0.50)/0.22))*3*s;   // pressing in
+    else               y = lerp(yc, H+40*s, smooth((p-0.72)/0.28));
+    const al = clamp((H*0.78 - y)/(H*0.06), 0, 1);
+    if (al > 0.01) drawCO2(x, y, rnd(q+2)*TAU + 0.35*Math.sin(TAU*(t+rnd(q+3))), al);
+  }
+
+  /* ---- permeate arrow + labels -------------------------------------- */
+  if (P.showArrow){
+    const aw = W*0.085, stem = aw*0.52, ay0 = H*0.835, ay1 = H*0.985, hd = aw*0.95;
+    ctx.beginPath();
+    ctx.moveTo(cx-stem/2, ay0); ctx.lineTo(cx+stem/2, ay0);
+    ctx.lineTo(cx+stem/2, ay1-hd); ctx.lineTo(cx+aw/2, ay1-hd);
+    ctx.lineTo(cx, ay1); ctx.lineTo(cx-aw/2, ay1-hd); ctx.lineTo(cx-stem/2, ay1-hd);
+    ctx.closePath();
+    ctx.fillStyle = mixColor(P.h2Color, "#ffffff", 0.45); ctx.fill();
+    ctx.strokeStyle = shade(P.h2Color,-30); ctx.lineWidth = 1.5*s; ctx.stroke();
+  }
+  // labels sit outside the molecule column so nothing ever overlaps them
+  if (P.feedLabel) text(ctx, P.feedLabel, W*0.025, 22*s, {size:16*s, bold:true, align:"left", color:"#334155"});
+  if (P.permLabel) text(ctx, P.permLabel, W*0.975, H*0.90, {size:16*s, bold:true, align:"right", color:shade(P.h2Color,-60)});
+  if (P.membLabel) text(ctx, P.membLabel, W*0.025, H-16*s, {size:14*s, align:"left", color:"#334155"});
+}
+
 const TEMPLATES = {
   flow: {
     name: "Flow reactor (packed bed)",
@@ -544,6 +737,30 @@ const TEMPLATES = {
       {key:"feedLabel",     label:"Feed label",      type:"text",  def:"H₂ + CO₂ feed"},
       {key:"permLabel",     label:"Permeate label",  type:"text",  def:"H₂ permeate"},
       {key:"membLabel",     label:"Membrane label",  type:"text",  def:"Graphene oxide (GO) membrane"},
+    ],
+  },
+  cgo: {
+    name: "Crumpled GO membrane (cGO)",
+    desc: "A crumpled graphene-oxide flake seen in 3D. Small H₂ slips through the wrinkled laminate and emerges in the permeate; bulkier CO₂ presses on the surface and bounces back, so only the occasional one breaks through.",
+    draw: drawCGO,
+    canvas: {w:700, h:620},
+    params: [
+      {key:"h2Color",   label:"H₂ (permeating)",   type:"color", def:"#a9d18e"},
+      {key:"co2CColor", label:"CO₂ carbon",         type:"color", def:"#262626"},
+      {key:"co2OColor", label:"CO₂ oxygen",         type:"color", def:"#e03131"},
+      {key:"deepColor", label:"Sheet (deep)",       type:"color", def:"#0e5aa8"},
+      {key:"liteColor", label:"Sheet (highlight)",  type:"color", def:"#e4f2fd"},
+      {key:"crumple",   label:"Crumple height",     type:"range", min:4, max:26, step:1, def:16},
+      {key:"ripples",   label:"Crumple density",    type:"range", min:0.6, max:2.4, step:0.1, def:1.6},
+      {key:"nH2",       label:"H₂ molecules",      type:"range", min:4, max:36, step:1, def:18},
+      {key:"nCO2",      label:"CO₂ molecules",     type:"range", min:2, max:20, step:1, def:7},
+      {key:"co2Pass",   label:"CO₂ break-through", type:"range", min:0, max:3, step:1, def:1},
+      {key:"speed",     label:"Permeation speed",   type:"range", min:1, max:3, step:1, def:2},
+      {key:"showCol",   label:"Feed/permeate column", type:"checkbox", def:true},
+      {key:"showArrow", label:"Permeate arrow",     type:"checkbox", def:true},
+      {key:"feedLabel", label:"Feed label",         type:"text", def:"H₂ + CO₂ feed"},
+      {key:"permLabel", label:"Permeate label",     type:"text", def:"H₂-rich permeate"},
+      {key:"membLabel", label:"Membrane label",     type:"text", def:"Crumpled GO (cGO) membrane"},
     ],
   },
   surface: {
@@ -671,6 +888,8 @@ function buildParamControls(){
   sel.addEventListener("change", () => {
     state.template = sel.value;
     initParams(state.template);
+    const cs = TEMPLATES[state.template].canvas;
+    if (cs){ state.width = cs.w; state.height = cs.h; $("#cw").value = cs.w; $("#ch").value = cs.h; }
     buildParamControls();
     $("#tplDesc").textContent = TEMPLATES[state.template].desc;
   });

@@ -8,7 +8,7 @@ browser, no install, no upload, no dependencies.
 Just double-click `index.html` (it works from the file system), or serve it locally:
 
 ```
-python -m http.server 8321 --directory C:/Users/MrBo/sci-gif-studio
+python -m http.server 8321 --directory .   # run from the repo folder
 # then open http://localhost:8321
 ```
 
@@ -18,6 +18,7 @@ python -m http.server 8321 --directory C:/Users/MrBo/sci-gif-studio
 |---|---|
 | Flow reactor (packed bed) | Gas molecules flowing through a catalyst bed, changing color as they convert (defaults set up for CO₂ methanation: CO₂ + 4 H₂ → CH₄ + 2 H₂O over Ni/Al₂O₃) |
 | Gas separation membrane (2D) | Small molecules permeating through membrane nanochannels while larger ones bounce back (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
+| Crumpled GO membrane (cGO) | The same separation seen in 3D: a crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ presses on the surface and bounces back (one CO₂ per loop breaks through, so the selectivity reads as finite) |
 | Catalyst surface reaction | Adsorption → surface reaction (color change) → desorption on an atomic surface |
 | Particle diffusion | Brownian-style particle motion in a container |
 | Reaction energy diagram | A marker crossing the activation barrier, with Ea and ΔE annotations |
@@ -40,6 +41,10 @@ Tips:
   material accept GIFs directly.
 - Keep durations ≤ 5 s and the canvas ≤ 800 px wide for small file sizes.
 - Lower the frame rate to ~12 fps to cut file size roughly in half.
+- Shaded 3D templates cost more than flat ones, because a continuously shaded
+  surface fills the 256-colour palette and compresses poorly. The cGO template
+  at its default 700 × 620, 3 s, 20 fps gives ~1.5 MB; dropping to 12 fps gives
+  ~0.9 MB, and 12 fps at 560 × 496 gives ~0.7 MB.
 
 ## Adding your own template
 
@@ -47,7 +52,9 @@ Open `index.html` and add an entry to the `TEMPLATES` object with:
 - `name`, `desc` — shown in the sidebar,
 - `params` — an array of `{key, label, type: color|range|text|checkbox, def, min, max, step}`,
 - `draw(ctx, t, P, W, H)` — a canvas draw function where `t ∈ [0,1)` is the
-  loop phase and `P` holds the current parameter values.
+  loop phase and `P` holds the current parameter values,
+- `canvas: {w, h}` — optional; the canvas size to switch to when the template is
+  selected, for templates that need a shape other than the 800 × 450 default.
 
 Use only **integer multiples** of `t` inside `sin/cos` (or phase-local motion
 with fade-in/out) so the GIF loops without a visible seam.
