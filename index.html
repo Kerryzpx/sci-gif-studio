@@ -551,6 +551,109 @@ function drawCrumpled(ctx,t,P,W,H){
   text(ctx, P.membLabel, W*0.975, H*0.65, {size:13*s, color:"#334155", align:"right"});
 }
 
+function drawPolymer(ctx,t,P,W,H){
+  const s = W/800;
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  // dense polymer film: gas dissolves at the feed face, hops between free-volume
+  // elements in the chain tangle, desorbs at the permeate face. No size-sieving
+  // pores, so both gases get through (fast, weakly selective).
+  const mx0 = W*0.12, mx1 = W*0.88;
+  const myT = H*0.42, myB = H*0.64, mt = myB-myT;
+  const feedY0 = H*0.17, feedY1 = myT - 14*s;
+  const permY1 = H*0.93, xIn = W*0.02, xOut = W*0.98;
+  const slab = () => { ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(mx0, myT, mx1-mx0, mt, 6*s); else ctx.rect(mx0, myT, mx1-mx0, mt); };
+  ctx.fillStyle = mixColor(P.membraneColor, "#ffffff", 0.82);
+  slab(); ctx.fill();
+  // entangled chains (static): seeded sums of sines, clipped to the slab
+  ctx.save();
+  slab(); ctx.clip();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (let c=0;c<P.chains;c++){
+    const q = c*13+7;
+    const y0 = myT + (0.08 + 0.84*rnd(q))*mt;
+    const a1 = (0.10+0.12*rnd(q+1))*mt, a2 = (0.05+0.08*rnd(q+2))*mt;
+    const k1 = (2+4*rnd(q+3))/(mx1-mx0)*2*Math.PI, k2 = (7+8*rnd(q+4))/(mx1-mx0)*2*Math.PI;
+    const p1 = rnd(q+5)*7, p2 = rnd(q+6)*7;
+    ctx.strokeStyle = mixColor(P.membraneColor, "#ffffff", 0.25 + 0.3*rnd(q+8));
+    ctx.lineWidth = 1.8*s;
+    ctx.beginPath();
+    for (let x=mx0-10*s; x<=mx1+10*s; x+=3*s){
+      const y = y0 + a1*Math.sin(k1*x+p1) + a2*Math.sin(k2*x+p2);
+      if (x === mx0-10*s) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = P.membraneColor; ctx.lineWidth = 2*s;
+  slab(); ctx.stroke();
+
+  // permeate: along the feed, dissolve at the surface, hop through the film, desorb.
+  // dwell stretches the in-film leg (a more soluble gas lingers longer).
+  const nHop = 5;
+  const permeatePath = (q,u,dwell) => {
+    const xe = mx0 + (0.06 + 0.88*rnd(q+1))*(mx1-mx0);
+    const yF = feedY0 + 8*s + rnd(q+2)*(feedY1-feedY0-16*s);
+    const L1 = xe - xIn, L2 = myT - yF, L3 = mt*dwell, L4 = permY1 - myB;
+    const sites = [[xe, myT]];
+    for (let k=1;k<nHop;k++){
+      const xs = clamp(sites[k-1][0] + (rnd(q+10+k)-0.5)*44*s, mx0+8*s, mx1-8*s);
+      sites.push([xs, myT + mt*k/nHop + (rnd(q+20+k)-0.5)*mt*0.08]);
+    }
+    const xo = clamp(sites[nHop-1][0] + (rnd(q+30)-0.5)*30*s, mx0+8*s, mx1-8*s);
+    sites.push([xo, myB]);
+    const d = u*(L1+L2+L3+L4);
+    const jig = Math.sin(2*Math.PI*((2+Math.floor(rnd(q+3)*3))*t + rnd(q+4)));
+    if (d < L1) return [xIn+d, yF + clamp((L1-d)/(80*s),0,1)*jig*4*s, 0];
+    if (d < L1+L2) return [xe, yF + (d-L1), (Math.PI/2)*smooth((d-L1)/L2)];
+    if (d < L1+L2+L3){
+      const f = (d-L1-L2)/L3*nHop, k = Math.min(Math.floor(f), nHop-1), fr = f-k;
+      const e = smooth(clamp((fr-0.35)/0.65,0,1));   // rattle in a cavity, then jump
+      const rat = (1-e)*Math.sin(2*Math.PI*(3*fr + rnd(q+40+k)))*2.2*s;
+      return [lerp(sites[k][0],sites[k+1][0],e)+rat, lerp(sites[k][1],sites[k+1][1],e),
+              Math.PI/2 + 0.5*Math.sin(2*Math.PI*fr)];
+    }
+    const y = myB + (d-L1-L2-L3);
+    return [xo + clamp((y-myB)/(50*s),0,1)*jig*3*s, y, (Math.PI/2)*(1-smooth((y-myB)/(40*s)))];
+  };
+  const acrossPath = (q,u) => {
+    const x = xIn + u*(xOut-xIn);
+    const yBase = feedY0 + 12*s + rnd(q+1)*(feedY1-feedY0-24*s);
+    return [x, yBase + Math.sin(2*Math.PI*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*5*s, 0];
+  };
+  // gas A diffuses faster (twice the loop speed); gas B is more soluble and lingers, but still permeates
+  for (let i=0;i<P.nA;i++){
+    const q = i*5+11;
+    const u = (rnd(q) + t*P.speed*2) % 1;
+    const p = rnd(q+6)*100 < P.permA ? permeatePath(q,u,2.2) : acrossPath(q,u);
+    drawGasMol(ctx, gA, p[0], p[1], s, p[2]);
+  }
+  for (let i=0;i<P.nB;i++){
+    const q = i*9+51;
+    const u = (rnd(q) + t*P.speed) % 1;
+    const p = rnd(q+6)*100 < P.permB ? permeatePath(q,u,3.2) : acrossPath(q,u);
+    drawGasMol(ctx, gB, p[0], p[1], s, p[2]);
+  }
+  // labels + flow arrows ("auto" composes from the selected gases)
+  const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
+  const retLabel  = P.retLabel  === "auto" ? "retentate" : P.retLabel;
+  const permLabel = P.permLabel === "auto" ? gA.label+" + "+gB.label+" permeate" : P.permLabel;
+  const ay = H*0.105;
+  text(ctx, feedLabel, W*0.11, ay-16*s, {size:15*s, bold:true, color:"#334155"});
+  arrow(ctx, W*0.045, ay, W*0.165, ay, "#334155", 3*s, 8*s);
+  text(ctx, retLabel, W*0.89, ay-16*s, {size:15*s, bold:true, color:"#334155"});
+  arrow(ctx, W*0.83, ay, W*0.95, ay, "#334155", 3*s, 8*s);
+  if (P.title) text(ctx, P.title, W*0.5, ay-8*s, {size:16*s, bold:true, color:"#0f172a"});
+  text(ctx, P.membLabel, mx0, myB+18*s, {size:13*s, color:"#334155", align:"left"});
+  text(ctx, P.mechLabel, mx1, myB+18*s, {size:13*s, color:"#334155", align:"right"});
+  const by = H*0.955;
+  text(ctx, permLabel, W*0.5, by, {size:15*s, bold:true, color:"#334155"});
+  if (P.showVerdict){
+    text(ctx, P.fluxLabel, W*0.03, by, {size:14*s, bold:true, color:"#15803d", align:"left"});
+    text(ctx, P.selLabel,  W*0.97, by, {size:14*s, bold:true, color:"#b91c1c", align:"right"});
+  }
+}
+
 function drawPSA(ctx,t,P,W,H){
   const s = W/800;
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
@@ -693,6 +796,586 @@ function drawPSA(ctx,t,P,W,H){
   ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
   ctx.beginPath(); ctx.moveTo(cx[0]-cw/2-2*s, H*0.52); ctx.lineTo(W*0.145, H*0.56); ctx.stroke();
   text(ctx, P.bedLabel, W*0.03, H*0.585, {size:12.5*s, color:"#334155", align:"left"});
+}
+
+// normal boiling points (K) at 1 atm, for the temperature-gradient labels
+const BP_K = {H2:20, He:4, N2:77, O2:90, CO:82, CH4:112, CO2:195, H2O:373};
+// pairs whose real column does not run at 1 atm get their own feed and
+// temperature labels. CO2 has no liquid at 1 atm, so H2/CO2 is shown at
+// ~30 bar: top just above the CO2 triple point (216.6 K), sump at the CO2
+// boiling point for that pressure; H2 stays non-condensable throughout.
+const CRYO_PRESET = {
+  "H2|CO2": {feed:"H₂ + CO₂ feed, ~30 bar", tTop:"≈ 223 K", subTop:"−50 °C · colder", tBot:"≈ 268 K", subBot:"−5 °C · warmer"},
+  "N2|O2":  {feed:"compressed air"},
+};
+function polyLen(pts){
+  let L = 0;
+  for (let i=1;i<pts.length;i++) L += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+  return L;
+}
+function polyAt(pts,d){ // point at arc length d along a polyline, plus the segment index
+  for (let i=1;i<pts.length;i++){
+    const [x0,y0] = pts[i-1], [x1,y1] = pts[i];
+    const L = Math.hypot(x1-x0, y1-y0);
+    if (d <= L || i === pts.length-1){ const u = L ? clamp(d/L,0,1) : 0; return [lerp(x0,x1,u), lerp(y0,y1,u), i]; }
+    d -= L;
+  }
+  return [...pts[pts.length-1], pts.length-1];
+}
+
+function drawCryo(ctx,t,P,W,H){
+  const s = Math.min(W/720, H/800);
+  const gL = GASES[P.gasL], gH = GASES[P.gasH];
+  // tray column: the more volatile gas L rises as vapour to the condenser,
+  // the less volatile gas H runs down tray by tray as liquid to the sump
+  const N = P.trays, k = 2*Math.max(1, Math.floor(N/4));   // feed tray; even, so reflux lands on the right
+  const cx = W*0.42, cw = 150*s, colL = cx-cw/2, colR = cx+cw/2;
+  const yTop = H*0.17, yBot = H*0.80, dome = 16*s;
+  const ySump = yBot - 44*s, yT0 = yTop + 40*s, yTn = ySump - 46*s;
+  const pitch = (yTn - yT0)/(N-1), liqD = 10*s, dcW = 26*s;
+  const yp = j => yT0 + j*pitch;                          // plate height
+  const side = j => ((j - k) & 1) ? 1 : -1;               // downcomer side (-1 = left)
+  const xWeir = j => cx + side(j)*(cw/2 - dcW);
+  const xDc = j => cx + side(j)*(cw/2 - dcW/2);
+  const yOH = H*0.075, xC0 = W*0.58, xC1 = W*0.74, xRf = xC0 + 20*s;
+  const yFeed = yp(k) - liqD - 14*s, yProd = H*0.92;
+  const xHX0 = W*0.04, xHX1 = W*0.16, xV = W*0.23;
+  const mix = (f,w) => { const a = hex2rgb(gL.tint), b = hex2rgb(gH.tint);
+    return `rgb(${[0,1,2].map(i => Math.round(lerp(lerp(a[i],b[i],f),255,w))).join(",")})`; };
+  const trayF = j => (j+1)/(N+1);                         // liquid gets richer in H going down
+  const pipe = (pts,col,w) => { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for (const p of pts.slice(1)) ctx.lineTo(p[0],p[1]); ctx.stroke(); };
+  const zigzag = (x0,x1,y,amp,n,col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.8*s; ctx.beginPath();
+    for (let i=0;i<=n;i++){ const x = lerp(x0,x1,i/n), yy = y + (i%2 ? -amp : amp); i ? ctx.lineTo(x,yy) : ctx.moveTo(x,yy); }
+    ctx.stroke(); };
+
+  // ---- piping: warm feed gray, cold side blue
+  const yRf = yp(0) - liqD - 12*s;
+  pipe([[-10,yFeed],[xHX0,yFeed]], "#cbd5e1", 5*s);
+  pipe([[xHX1,yFeed],[colL,yFeed]], "#93c5fd", 5*s);
+  pipe([[cx,yTop-dome],[cx,yOH],[xC0,yOH]], "#93c5fd", 5*s);
+  pipe([[xC1,yOH],[W+10,yOH]], "#93c5fd", 5*s);
+  pipe([[xRf,yOH+20*s],[xRf,yRf],[colR,yRf]], mix(0.1,0.35), 4*s);
+  pipe([[cx,yBot+dome],[cx,yProd],[W+10,yProd]], mix(1,0.35), 5*s);
+
+  // ---- main heat exchanger and J-T expansion valve
+  ctx.fillStyle = "#f1f5f9"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2*s;
+  ctx.beginPath(); ctx.roundRect(xHX0, yFeed-17*s, xHX1-xHX0, 34*s, 5*s); ctx.fill(); ctx.stroke();
+  zigzag(xHX0+6*s, xHX1-6*s, yFeed, 9*s, 10, "#60a5fa");
+  ctx.fillStyle = "#475569";
+  ctx.beginPath(); ctx.moveTo(xV-10*s,yFeed-8*s); ctx.lineTo(xV+10*s,yFeed+8*s); ctx.lineTo(xV+10*s,yFeed-8*s);
+  ctx.lineTo(xV-10*s,yFeed+8*s); ctx.closePath(); ctx.fill();
+  ctx.fillRect(xV-1*s, yFeed-16*s, 2*s, 8*s); ctx.fillRect(xV-6*s, yFeed-18*s, 12*s, 3*s);
+
+  // ---- overhead condenser with coolant in/out
+  ctx.fillStyle = "#e0f2fe"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2*s;
+  ctx.beginPath(); ctx.roundRect(xC0, yOH-20*s, xC1-xC0, 40*s, 18*s); ctx.fill(); ctx.stroke();
+  zigzag(xC0+14*s, xC1-14*s, yOH, 10*s, 8, "#38bdf8");
+  arrow(ctx, xC1-22*s, yOH-36*s, xC1-22*s, yOH-21*s, "#0284c7", 2*s, 6*s);
+  arrow(ctx, xC0+22*s, yOH-21*s, xC0+22*s, yOH-36*s, "#0284c7", 2*s, 6*s);
+
+  // ---- column shell and sump
+  const shell = () => { ctx.beginPath();
+    ctx.moveTo(colL, yTop+dome); ctx.quadraticCurveTo(colL, yTop-dome, cx, yTop-dome);
+    ctx.quadraticCurveTo(colR, yTop-dome, colR, yTop+dome); ctx.lineTo(colR, yBot-dome);
+    ctx.quadraticCurveTo(colR, yBot+dome, cx, yBot+dome); ctx.quadraticCurveTo(colL, yBot+dome, colL, yBot-dome);
+    ctx.closePath(); };
+  shell(); ctx.fillStyle = "#f8fafc"; ctx.fill();
+  ctx.save(); shell(); ctx.clip();
+  ctx.fillStyle = mix(1,0.6); ctx.fillRect(colL, ySump, cw, yBot+dome-ySump);
+  ctx.restore();
+  const yCoil = ySump + 24*s;                             // reboiler coil
+  zigzag(colR, colL+18*s, yCoil, 6*s, 12, "#dc2626");
+  const bubble = (x,y,r,a) => { ctx.globalAlpha = a; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.3*s;
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.stroke(); ctx.globalAlpha = 1; };
+  for (let b=0;b<10;b++){
+    const ph = (rnd(b*13+5) + 2*t) % 1;
+    bubble(lerp(colL+22*s, colR-10*s, rnd(b*13+1)), yCoil - ph*(yCoil-ySump-3*s), (1.5+1.8*ph)*s, 1-ph*0.7);
+  }
+
+  // ---- trays: liquid pool with a moving surface, plate, weir + downcomer apron
+  for (let j=0;j<N;j++){
+    const f = trayF(j), sd = side(j), y = yp(j), xw = xWeir(j);
+    const xa = sd < 0 ? xw : colL, xb = sd < 0 ? colR : xw;
+    const yNext = j < N-1 ? yp(j+1) : ySump;
+    const dx0 = sd < 0 ? colL : xw, dx1 = sd < 0 ? xw : colR, yDc = lerp(y, yNext, 0.55);
+    ctx.fillStyle = mix(f,0.62);
+    ctx.fillRect(dx0, yDc, dx1-dx0, yNext - yDc);         // liquid backed up in the downcomer
+    ctx.beginPath(); ctx.moveTo(xa, y);
+    for (let x = xa; x <= xb+0.1; x += 5*s)
+      ctx.lineTo(x, y - liqD + Math.sin(6.283*2*t + x/(12*s) + j*1.7)*1.4*s);
+    ctx.lineTo(xb, y); ctx.closePath(); ctx.fill();
+    for (let b=0;b<6;b++){
+      const ph = (rnd(j*31+b+7) + 2*t) % 1;
+      bubble(lerp(xa+8*s, xb-8*s, rnd(j*31+b)), y - 1.5*s - ph*(liqD-3*s), (1+1.3*ph)*s, 1-ph*0.6);
+    }
+    ctx.strokeStyle = P.colColor; ctx.lineCap = "butt";
+    ctx.lineWidth = 3*s; ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+    ctx.lineWidth = 2*s; ctx.beginPath();
+    ctx.moveTo(xw, y - liqD - 2*s); ctx.lineTo(xw, j < N-1 ? yNext - liqD - 5*s : ySump + 4*s); ctx.stroke();
+  }
+  shell(); ctx.strokeStyle = P.colColor; ctx.lineWidth = 3*s; ctx.stroke();
+
+  // ---- reflux droplets run back from the condenser onto the top tray
+  const rfPts = [[xRf,yOH+20*s],[xRf,yRf],[colR-6*s,yRf],[colR-14*s,yp(0)-liqD]];
+  const rfL = polyLen(rfPts);
+  ctx.fillStyle = mix(0.1,0.2);
+  for (let i=0;i<6;i++){
+    const u = (i/6 + 2*t) % 1, [x,y] = polyAt(rfPts, u*rfL);
+    ctx.globalAlpha = smooth(u/0.08)*smooth((1-u)/0.08);  // fade at both ends: no pop at the wrap
+    ctx.beginPath(); ctx.arc(x,y,2.6*s,0,7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // ---- molecules (each walks its own closed route once per loop)
+  const tumble = (q,i) => 6.283*(rnd(q+9) + (i%2 ? 1 : -1)*t);
+  const lane = cw/2 - dcW - 10*s;
+  for (let i=0;i<P.nH;i++){                               // heavy: across each tray, down each downcomer
+    const q = i*17+41;
+    const pts = [[-30*s,yFeed],[colL+6*s,yFeed],[cx + lerp(-lane*0.3, lane, rnd(q+1)), yp(k)-liqD/2]];
+    for (let j=k;j<N;j++){
+      const sd = side(j);
+      pts.push([xWeir(j) - sd*5*s, yp(j)-liqD/2], [xWeir(j), yp(j)-liqD-3*s], [xDc(j), yp(j)-liqD+2*s]);
+      pts.push(j < N-1 ? [xDc(j), yp(j+1)-liqD/2] : [xDc(j), ySump+12*s]);
+    }
+    pts.push([cx, ySump+30*s],[cx, yProd],[W+30*s, yProd]);
+    const [x,y] = polyAt(pts, ((rnd(q) + t*P.speed) % 1)*polyLen(pts));
+    drawGasMol(ctx, gH, x, y, s, tumble(q,i));
+  }
+  for (let i=0;i<P.nL;i++){                               // light: straight up through the trays as vapour
+    const q = i*13+7, ox = (rnd(q+1)*2-1)*lane;
+    const pts = [[-30*s,yFeed],[colL+6*s,yFeed],[cx+ox, yFeed-22*s],[cx+ox, yTop+6*s],
+                 [cx, yTop-dome+4*s],[cx, yOH],[xC1, yOH],[W+30*s, yOH]];
+    let [x,y,seg] = polyAt(pts, ((rnd(q) + t*P.speed) % 1)*polyLen(pts));
+    if (seg === 3) x += Math.sin(y/(9*s) + rnd(q+3)*6.283)*3*s;
+    drawGasMol(ctx, gL, x, y, s, tumble(q,i));
+  }
+
+  // ---- labels ("auto" composes from the selected gases)
+  const pre = CRYO_PRESET[P.gasL+"|"+P.gasH] || {};
+  const feedLabel = P.feedLabel === "auto" ? (pre.feed || gL.label+" + "+gH.label+" feed") : P.feedLabel;
+  const topLabel  = P.topLabel  === "auto" ? gL.label+" product (top)" : P.topLabel;
+  const botLabel  = P.botLabel  === "auto" ? "liquid "+gH.label+" (bottoms)" : P.botLabel;
+  const lab = "#334155";
+  text(ctx, feedLabel, W*0.02, yFeed-34*s, {size:14.5*s, bold:true, color:lab, align:"left"});
+  text(ctx, P.hxLabel, (xHX0+xHX1)/2, yFeed+30*s, {size:11.5*s, color:lab});
+  text(ctx, P.valveLabel, xV, yFeed+30*s, {size:11.5*s, color:lab});
+  arrow(ctx, W-40*s, yOH, W-6*s, yOH, gL.tint, 3.5*s, 9*s);
+  text(ctx, topLabel, W*0.975, yOH+22*s, {size:14.5*s, bold:true, color:gL.tint, align:"right"});
+  arrow(ctx, W-40*s, yProd, W-6*s, yProd, gH.tint, 3.5*s, 9*s);
+  text(ctx, botLabel, W*0.975, yProd-17*s, {size:14.5*s, bold:true, color:gH.tint, align:"right"});
+  text(ctx, P.condLabel, (xC0+xC1)/2, yOH-44*s, {size:11.5*s, color:lab});
+  text(ctx, "reflux", xRf+8*s, (yOH+yRf)/2+12*s, {size:11.5*s, color:lab, align:"left"});
+  arrow(ctx, colR+44*s, yCoil, colR+6*s, yCoil, "#dc2626", 2.5*s, 7*s);
+  text(ctx, P.rebLabel, colR+50*s, yCoil, {size:11.5*s, color:"#b91c1c", align:"left"});
+  const bx = colL-14*s;                                   // section brackets
+  const bracket = (y0,y1,str) => {
+    ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 1.5*s; ctx.beginPath();
+    ctx.moveTo(bx+6*s,y0); ctx.lineTo(bx,y0); ctx.lineTo(bx,y1); ctx.lineTo(bx+6*s,y1); ctx.stroke();
+    text(ctx, str, bx-8*s, (y0+y1)/2, {size:12.5*s, bold:true, color:"#475569", align:"right"});
+  };
+  bracket(yp(0)-liqD-4*s, yFeed-48*s, P.rectLabel);
+  bracket(yFeed+44*s, ySump-4*s, P.stripLabel);
+  if (P.showT){                                           // coldest at the top, warmest at the sump
+    const tx = W*0.80, ty0 = yp(0), ty1 = yp(N-1), tw = 10*s;
+    const gr = ctx.createLinearGradient(0, ty0, 0, ty1);
+    gr.addColorStop(0, "#bfdbfe"); gr.addColorStop(1, "#fca5a5");
+    ctx.fillStyle = gr; ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.2*s;
+    ctx.beginPath(); ctx.roundRect(tx-tw/2, ty0, tw, ty1-ty0, tw/2); ctx.fill(); ctx.stroke();
+    const tL = BP_K[P.gasL], tH = BP_K[P.gasH];
+    const tTop = pre.tTop || (tL ? "≈ "+tL+" K" : "cold"), tBot = pre.tBot || (tH ? "≈ "+tH+" K" : "warm");
+    text(ctx, tTop, tx+12*s, ty0+6*s, {size:13*s, bold:true, color:"#1d4ed8", align:"left"});
+    text(ctx, pre.subTop || "colder", tx+12*s, ty0+22*s, {size:11*s, color:"#64748b", align:"left"});
+    text(ctx, tBot, tx+12*s, ty1-6*s, {size:13*s, bold:true, color:"#b91c1c", align:"left"});
+    text(ctx, pre.subBot || "warmer", tx+12*s, ty1-22*s, {size:11*s, color:"#64748b", align:"left"});
+    ctx.save(); ctx.translate(tx-16*s, (ty0+ty1)/2); ctx.rotate(-Math.PI/2);
+    text(ctx, "temperature", 0, 0, {size:11.5*s, color:"#64748b"}); ctx.restore();
+  }
+}
+
+/* ---- shared bits for the syngas templates (SMR, coal gasification) ---- */
+// Flow speeds below 1x. At 1x a mover crosses its whole path once per loop;
+// to go slower and still loop seamlessly, each mover gets m = 1/speed copies
+// that share everything but their phase (spaced 1/m apart). Copy s always
+// holds the s-th slot along the path, phase in [s/m, (s+1)/m): copies are then
+// drawn in path order, so where two overlap the same one stays on top and the
+// loop closes pixel-for-pixel. Counts round up to whole groups of m.
+const SLOW_SPEEDS = [["0.25","¼× (slowest)"],["0.333","⅓×"],["0.5","½×"],["1","1×"],["2","2×"],["3","3×"]];
+function flowM(v){ return v < 1 ? Math.round(1/v) : 1; }
+function flowCount(n, v){ const m = flowM(v); return Math.ceil(n/m)*m; }
+function flowPhase(r, i, v, t){
+  const m = flowM(v), u = m*r + (v < 1 ? 1 : v)*t;
+  return (u - Math.floor(u) + i % m)/m;
+}
+function strokePath(ctx,pts,col,w){
+  ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for (const p of pts.slice(1)) ctx.lineTo(p[0],p[1]);
+  ctx.stroke();
+}
+function zigLine(ctx,x0,x1,y,amp,n,col,lw){
+  ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
+  for (let i=0;i<=n;i++){ const x = lerp(x0,x1,i/n), yy = y + (i%2 ? -amp : amp); i ? ctx.lineTo(x,yy) : ctx.moveTo(x,yy); }
+  ctx.stroke();
+}
+// teardrop flame rooted at (x,y), pointing along dir (+1 down, -1 up); flick in [-1,1]
+function flame(ctx,x,y,w,h,dir,flick){
+  const hh = h*(0.86 + 0.14*flick);
+  for (const [c,k] of [["#f97316",1],["#fbbf24",0.64],["#fef3c7",0.32]]){
+    const ww = w*k, h2 = hh*k;
+    ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(x-ww/2, y);
+    ctx.bezierCurveTo(x-ww/2, y+dir*h2*0.5, x-ww*0.12, y+dir*h2*0.8, x, y+dir*h2);
+    ctx.bezierCurveTo(x+ww*0.12, y+dir*h2*0.8, x+ww/2, y+dir*h2*0.5, x+ww/2, y);
+    ctx.closePath(); ctx.fill();
+  }
+}
+function glow(ctx,x,y,r,a){
+  if (a <= 0) return;
+  const g = ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0, `rgba(253,224,71,${0.9*a})`); g.addColorStop(1, "rgba(253,224,71,0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+}
+function packedBed(ctx,x0,y0,x1,y1,r,col,seed){
+  const nx = Math.max(1, Math.floor((x1-x0)/(2.4*r))), ny = Math.max(1, Math.floor((y1-y0)/(2.2*r)));
+  for (let j=0;j<ny;j++) for (let i=0;i<nx;i++){
+    const off = (j%2) ? 0.5 : 0;
+    const x = x0 + (i+0.5+off*(i<nx-1?1:0))*(x1-x0)/nx, y = y0 + (j+0.5)*(y1-y0)/ny;
+    ctx.fillStyle = shade(col, ((i+j+seed)%3)*14 - 10);
+    ctx.globalAlpha = 0.5;                                  // pale, so the gas stays readable on top
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---- steam methane reforming: reformer furnace -> waste-heat boiler -> shift ---- */
+// each packet carries CH4 + 2 H2O; slots keep their order so every molecule
+// changes species in place as it crosses a reaction front
+const SMR_SLOTS = [["CH4","H2O","H2O"], ["CO","H2","H2O","H2","H2"], ["CO2","H2","H2","H2","H2"]];
+// Size sliders move shapes relative to one another, so these templates lay
+// themselves out in design units (1 unit = 1 px at the default canvas), work
+// out how much room that needs, then scale the whole drawing to fit the
+// canvas and clip to it. Growing a part pushes its neighbours aside instead
+// of running into them; the drawing shrinks a little to make room.
+const TAU = 2*Math.PI;
+function fitLayout(ctx,W,H,VW,VH,BW,BH){
+  const f = Math.min(W/BW, H/BH, W/VW, H/VH);         // shrink to make room, never enlarge past the base scale
+  ctx.save();
+  ctx.translate((W-VW*f)/2, (H-VH*f)/2); ctx.scale(f, f);
+  ctx.beginPath(); ctx.rect(0, 0, VW, VH); ctx.clip();
+}
+
+function drawSMR(ctx,t,P,W,H){
+  const k = key => P[key]/100;
+  const kFw = k("furnW"), kFh = k("furnH"), kT = k("tubeSize"), kFl = k("flameSize"), kC = k("pelletSize"),
+        kB = k("boilerSize"), kSw = k("shiftW"), kSh = k("shiftH"), kM = k("molSize"), kP = k("pipeSize"), kX = k("textSize");
+  const nT = P.tubes, lab = "#334155";
+  // ---- layout, left to right and top to bottom
+  const fx0 = 136, fx1 = fx0 + 288*kFw, fy0 = 112, fy1 = fy0 + 336*kFh;
+  const yH = fy0 - 39, yP = yH;
+  const pitch = (fx1-fx0)/nT, tw = Math.min(22*kT, pitch*0.75);
+  const xT = i => fx0 + (i+0.5)*pitch;
+  const bw = 56*kB, bh = 30*kB;
+  const sw = 60*kSw, sd = 14*kSw, sh = 224*kSh;
+  const xB = fx1 + 40 + bw/2;
+  const xS = Math.max(xB + bw/2 + 26 + sw/2, fx1 + 122*kX + sw/2);
+  const xL = xS + sw/2 + 12;                              // shift labels
+  let yS0 = (fy0+fy1)/2 + 22 - sh/2;
+  yS0 = Math.max(yS0, yP + 30 + sd);                      // keep the dome below the product line
+  const yS1 = yS0 + sh;
+  const yC = Math.max(fy1 + 45, yS1 + sd + 30);
+  const VW = xL + 150*kX + 32, VH = yC + 30 + 37*kX;
+  fitLayout(ctx, W, H, VW, VH, 800, 560);
+  W = VW; H = VH;
+
+  // furnace box, glowing firebox
+  const fg = ctx.createLinearGradient(0, fy0, 0, fy1);
+  fg.addColorStop(0, "#fed7aa"); fg.addColorStop(1, "#fff7ed");
+  ctx.fillStyle = fg; ctx.fillRect(fx0, fy0, fx1-fx0, fy1-fy0);
+  // piping
+  strokePath(ctx, [[-10,yH],[xT(nT-1),yH]], "#94a3b8", 6*kP);
+  strokePath(ctx, [[xT(0),yC],[xS,yC],[xS,yS1+sd]], "#94a3b8", 6*kP);
+  strokePath(ctx, [[xS,yS0-sd],[xS,yP],[W+10,yP]], "#94a3b8", 6*kP);
+  // burners on the roof, flames between the tubes (clipped to the firebox)
+  ctx.save(); ctx.beginPath(); ctx.rect(fx0, fy0-30, fx1-fx0, fy1-fy0+30); ctx.clip();
+  for (let i=0;i<=nT;i++){
+    const x = lerp(fx0+16, fx1-16, i/nT);
+    arrow(ctx, x, fy0-22, x, fy0-8, "#78716c", 2, 5);
+    ctx.fillStyle = "#57534e"; ctx.fillRect(x-7, fy0-5, 14, 9);
+    flame(ctx, x, fy0+4, 18*kFl, 78*kFl, 1, Math.sin(TAU*3*t + i*1.9));
+  }
+  ctx.restore();
+  // catalyst tubes
+  const pr = Math.min(3.6*kC, (tw-4)/2.2);
+  for (let i=0;i<nT;i++){
+    const x = xT(i);
+    ctx.fillStyle = "#f1f5f9"; ctx.fillRect(x-tw/2, yH, tw, yC-yH);
+    packedBed(ctx, x-tw/2+2, fy0+4, x+tw/2-2, fy1-4, pr, P.catColor, i);
+    ctx.strokeStyle = P.tubeColor; ctx.lineWidth = 2; ctx.strokeRect(x-tw/2, yH, tw, yC-yH);
+  }
+  ctx.strokeStyle = P.wallColor; ctx.lineWidth = 8; ctx.strokeRect(fx0, fy0, fx1-fx0, fy1-fy0);
+  // flue gas leaves the bottom of the firebox
+  const yFlue = Math.min(fy1-22, yC-bh/2-28*kX);          // stays clear of the boiler label
+  arrow(ctx, fx1+4, yFlue, fx1+46, yFlue, "#a8a29e", 3, 8);
+  text(ctx, P.flueLabel, fx1+52, yFlue, {size:11.5*kX, color:"#78716c", align:"left"});
+  // waste-heat boiler
+  ctx.fillStyle = "#f8fafc"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(xB-bw/2, yC-bh/2, bw, bh, 5*kB); ctx.fill(); ctx.stroke();
+  zigLine(ctx, xB-bw/2+6*kB, xB+bw/2-6*kB, yC, bh*0.27, 8, "#60a5fa", 1.8);
+  // shift reactor
+  ctx.beginPath();
+  ctx.moveTo(xS-sw/2, yS0); ctx.quadraticCurveTo(xS-sw/2, yS0-sd, xS, yS0-sd);
+  ctx.quadraticCurveTo(xS+sw/2, yS0-sd, xS+sw/2, yS0); ctx.lineTo(xS+sw/2, yS1);
+  ctx.quadraticCurveTo(xS+sw/2, yS1+sd, xS, yS1+sd); ctx.quadraticCurveTo(xS-sw/2, yS1+sd, xS-sw/2, yS1);
+  ctx.closePath(); ctx.fillStyle = "#f8fafc"; ctx.fill();
+  packedBed(ctx, xS-sw/2+4, yS0+4, xS+sw/2-4, yS1-4, Math.min(5*kC, (sw-8)/2.4), P.shiftColor, 1);
+  ctx.strokeStyle = "#475569"; ctx.lineWidth = 3; ctx.stroke();
+
+  // gas packets
+  const gap = 14*kM, ms = 0.9*kM, gl = 16*kM, xStart = -40;
+  const V = parseFloat(P.speed), M = flowM(V);
+  for (let i=0;i<flowCount(P.nPack, V);i++){
+    const g = Math.floor(i/M), q = g*19+3, x = xT(g % nT);
+    const pts = [[xStart,yH],[x,yH],[x,yC],[xS,yC],[xS,yS0-sd],[xS,yP],[W+90*kM,yP]];
+    const L = polyLen(pts);
+    const dR = (x-xStart) + lerp(fy0+30, fy1-70, rnd(q+1)) - yH;
+    const dS = (x-xStart) + (yC-yH) + (xS-x) + (yC - lerp(yS1-24, yS0+40, rnd(q+2)));
+    const head = flowPhase(rnd(q), i, V, t)*(L + 5*gap);
+    for (let m=0;m<5;m++){
+      const dm = head - m*gap;
+      if (dm < 0 || dm > L) continue;
+      const st = dm < dR ? 0 : dm < dS ? 1 : 2;
+      const sp = SMR_SLOTS[st][m];
+      if (!sp) continue;
+      const [px,py] = polyAt(pts, dm);
+      // flash where a molecule changes species
+      if (m <= 1 && Math.abs(dm-dR) < gl) glow(ctx, px, py, gl, 1-Math.abs(dm-dR)/gl);
+      if ((m === 0 || m === 2) && Math.abs(dm-dS) < gl) glow(ctx, px, py, gl, 1-Math.abs(dm-dS)/gl);
+      ctx.globalAlpha = (st === 1 && m >= 3) ? smooth((dm-dR)/(18*kM)) : 1;   // new H2 fades in
+      drawGasMol(ctx, GASES[sp], px, py, ms, TAU*(rnd(q+m) + (m%2 ? 1 : -1)*t));
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // labels
+  arrow(ctx, 4, yH, 40, yH, lab, 3, 8);
+  text(ctx, P.feedLabel, 16, yH-20*kX, {size:14.5*kX, bold:true, color:lab, align:"left"});
+  arrow(ctx, W-40, yP, W-6, yP, "#2563eb", 3.5, 9);
+  text(ctx, P.prodLabel, W-20, yP-20*kX, {size:14.5*kX, bold:true, color:"#2563eb", align:"right"});
+  text(ctx, P.fuelLabel, fx1+10, fy0-14, {size:11.5*kX, color:"#78716c", align:"left"});
+  text(ctx, P.whbLabel, xB, yC-bh/2-10*kX, {size:11.5*kX, color:lab});
+  const cxF = (fx0+fx1)/2;
+  text(ctx, P.refLabel, cxF, yC+31*kX, {size:12.5*kX, bold:true, color:P.wallColor});
+  text(ctx, P.shiftLabel, xL, yS0+10*kX, {size:12.5*kX, bold:true, color:lab, align:"left"});
+  text(ctx, P.shiftCat, xL, yS0+28*kX, {size:11.5*kX, color:"#64748b", align:"left"});
+  if (P.showEq){
+    text(ctx, "CH₄ + H₂O → CO + 3 H₂   ΔH° = +206 kJ/mol", cxF, yC+53*kX, {size:12*kX, color:lab});
+    text(ctx, "CO + H₂O → CO₂ + H₂", xL, yS0+54*kX, {size:12*kX, color:lab, align:"left"});
+    text(ctx, "ΔH° = −41 kJ/mol", xL, yS0+71*kX, {size:12*kX, color:lab, align:"left"});
+  }
+  ctx.restore();
+}
+
+/* ---- coal gasification: entrained-flow, slagging, water quench, shift ---- */
+function drawGasifier(ctx,t,P,W,H){
+  const k = key => P[key]/100;
+  const kV = k("vesselW"), kVh = k("vesselH"), kFl = k("flameSize"), kSc = k("scrubSize"), kSw = k("shiftW"),
+        kSh = k("shiftH"), kM = k("molSize"), kCo = k("coalSize"), kP = k("pipeSize"), kX = k("textSize");
+  const lab = "#334155";
+  // ---- layout
+  const ro = 95*kV, ri = 78*kV, rt = 22*kV, dome = 30*kV;
+  const cx = Math.max(209, 125*kX + 32) + ro;             // room for the left-hand labels
+  const yF = 48, yTop = Math.max(136, yF + dome + 60);
+  const yCone = yTop + 245*kVh, yThr = yCone + 41*kV, yFl = yThr + 10;
+  const yW = yFl + 105*kVh, yQ1 = yW + 61*kVh, yOut = yFl + 44*kVh;
+  const xCoal = cx-11*kV, xO2 = cx+11*kV, yBurn = yTop-dome-20, yTip = yTop-dome+16;
+  const xR = cx+ro+18;                                    // gasifier labels
+  const xSc0 = cx+ro+80, xSc1 = xSc0 + 76*kSc, ySc0 = yOut-52*kSc, ySc1 = yOut+42*kSc;
+  // water-gas shift reactor: syngas + steam meet at a tee below it, H2 + CO2 leave the top
+  const shW = 56*kSw, shD = 12*kSw, yShB = yOut - 68;
+  const yP = 116, shH = Math.min(163*kSh, yShB - shD - yP - 30);
+  const yShT = yShB - shH;
+  const xSh = Math.max(xSc1 + 71 + shW/2, xR + 175*kX);
+  const xe = cx+ro+42, yEq = Math.max(yQ1-13, ySc1 + 14 + 30*kX);
+  const VW = Math.max(xSh + shW/2 + 78, xe + 262*kX + 10);
+  const VH = Math.max(yQ1 + 82, yEq + 54*kX + 20);
+  fitLayout(ctx, W, H, VW, VH, 760, 680);
+  W = VW; H = VH;
+  const shell = () => { ctx.beginPath();
+    ctx.moveTo(cx-ro, yTop); ctx.quadraticCurveTo(cx-ro, yTop-dome, cx, yTop-dome);
+    ctx.quadraticCurveTo(cx+ro, yTop-dome, cx+ro, yTop); ctx.lineTo(cx+ro, yQ1);
+    ctx.quadraticCurveTo(cx+ro, yQ1+24*kV, cx, yQ1+24*kV); ctx.quadraticCurveTo(cx-ro, yQ1+24*kV, cx-ro, yQ1);
+    ctx.closePath(); };
+  const chamber = () => { ctx.beginPath();
+    ctx.moveTo(cx-ri, yTop); ctx.quadraticCurveTo(cx-ri, yTop-dome+14*kV, cx, yTop-dome+14*kV);
+    ctx.quadraticCurveTo(cx+ri, yTop-dome+14*kV, cx+ri, yTop);
+    ctx.lineTo(cx+ri, yCone); ctx.lineTo(cx+rt, yThr); ctx.lineTo(cx+rt, yFl);
+    ctx.lineTo(cx-rt, yFl); ctx.lineTo(cx-rt, yThr); ctx.lineTo(cx-ri, yCone); ctx.closePath(); };
+
+  // feed + product piping
+  const pw = 6*kP;
+  strokePath(ctx, [[-10,yF],[xCoal,yF],[xCoal,yBurn]], "#a8a29e", pw);
+  strokePath(ctx, [[W+10,yF],[xO2,yF],[xO2,yBurn]], "#93c5fd", pw);
+  strokePath(ctx, [[cx+ro,yOut],[xSh,yOut],[xSh,yShB+shD]], "#94a3b8", pw);
+  strokePath(ctx, [[W+10,yOut],[xSh,yOut]], "#bae6fd", pw);
+  strokePath(ctx, [[xSh,yShT-shD],[xSh,yP],[W+10,yP]], "#94a3b8", pw);
+  strokePath(ctx, [[cx,yQ1+24*kV],[cx,H+10]], "#78716c", pw);
+  // vessel: refractory band (with brick joints), hot chamber, quench section
+  ctx.save(); shell(); ctx.clip();
+  ctx.fillStyle = P.brickColor; ctx.fillRect(cx-ro, yTop-dome, 2*ro, yFl-yTop+dome);
+  ctx.strokeStyle = shade(P.brickColor, 45); ctx.lineWidth = 1;
+  for (let y = yTop-dome, r = 0; y < yFl; y += 11, r++){
+    ctx.beginPath(); ctx.moveTo(cx-ro, y); ctx.lineTo(cx+ro, y); ctx.stroke();
+    for (let x = cx-ro + (r%2)*9; x < cx+ro; x += 18){
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y+11); ctx.stroke(); }
+  }
+  ctx.fillStyle = "#f1f5f9"; ctx.fillRect(cx-ro, yFl, 2*ro, yQ1+30*kV-yFl);
+  ctx.restore();
+  const cg = ctx.createLinearGradient(0, yTop-dome, 0, yThr);
+  cg.addColorStop(0, "#fdba74"); cg.addColorStop(1, "#fff7ed");
+  chamber(); ctx.fillStyle = cg; ctx.fill();
+  // burner and flame
+  ctx.fillStyle = "#475569"; ctx.fillRect(cx-16*kV, yBurn, 32*kV, yTip-yBurn);
+  ctx.save(); chamber(); ctx.clip();
+  flame(ctx, cx, yTip, 74*kFl, 170*kFl, 1, Math.sin(TAU*3*t));
+  flame(ctx, cx-30*kFl, yTip+4, 30*kFl, 90*kFl, 1, Math.sin(TAU*4*t+1.3));
+  flame(ctx, cx+30*kFl, yTip+4, 30*kFl, 90*kFl, 1, Math.sin(TAU*4*t+2.6));
+  ctx.restore();
+  // scrubber with falling spray
+  ctx.fillStyle = "#f8fafc"; ctx.fillRect(xSc0, ySc0, xSc1-xSc0, ySc1-ySc0);
+  ctx.fillStyle = "rgba(56,189,248,0.35)"; ctx.fillRect(xSc0, ySc1-14*kSc, xSc1-xSc0, 14*kSc);
+  ctx.fillStyle = "#38bdf8";
+  for (let i=0;i<14;i++){
+    const ph = (rnd(i*7+3) + 2*t) % 1;
+    ctx.beginPath(); ctx.arc(lerp(xSc0+6, xSc1-6, rnd(i*7+1)), lerp(ySc0+8, ySc1-16*kSc, ph), 1.8, 0, 7); ctx.fill();
+  }
+  ctx.strokeStyle = "#475569"; ctx.lineWidth = 2.5; ctx.strokeRect(xSc0, ySc0, xSc1-xSc0, ySc1-ySc0);
+  // shift reactor shell + catalyst bed
+  ctx.beginPath();
+  ctx.moveTo(xSh-shW/2, yShT); ctx.quadraticCurveTo(xSh-shW/2, yShT-shD, xSh, yShT-shD);
+  ctx.quadraticCurveTo(xSh+shW/2, yShT-shD, xSh+shW/2, yShT); ctx.lineTo(xSh+shW/2, yShB);
+  ctx.quadraticCurveTo(xSh+shW/2, yShB+shD, xSh, yShB+shD); ctx.quadraticCurveTo(xSh-shW/2, yShB+shD, xSh-shW/2, yShB);
+  ctx.closePath(); ctx.fillStyle = "#f8fafc"; ctx.fill();
+  packedBed(ctx, xSh-shW/2+4, yShT+4, xSh+shW/2-4, yShB-4, Math.min(5, (shW-8)/2.4), P.shiftColor, 1);
+  ctx.strokeStyle = "#475569"; ctx.lineWidth = 3; ctx.stroke();
+
+  const swirl = (y,ph) => Math.sin(TAU*y/120 + ph) * (ri-18)
+    * clamp((yCone-y)/70,0,1) * clamp((y-yTop)/60,0,1);
+
+  // gaseous products: born in the flame zone, swirl down, through the dip
+  // tube and the quench water, out the side to the scrubber and the shift
+  const ms = 0.9*kM, gl = 16*kM;
+  const gases = [["CO",P.nCO],["H2",P.nH2],["CO2",P.nCO2]];
+  const V = parseFloat(P.speed), M = flowM(V);
+  let g0 = 0;
+  for (const [g,n] of gases) { const nn = flowCount(n, V); for (let i=0;i<nn;i++){
+    const gg = Math.floor(i/M), q = (g0+gg)*23+11;
+    const bx = cx + (rnd(q+1)*2-1)*Math.max(0, ri-24), by = lerp(yTop+40, yCone-50, rnd(q+2));
+    const pts = [[bx,by],[cx,yCone+6],[cx,yFl],[cx,yW+16],[cx+ro*0.62,yW+12],
+                 [cx+ro*0.62,yOut],[cx+ro,yOut],[xSh,yOut],[xSh,yShB+shD],
+                 [xSh,yShT-shD],[xSh,yP],[W+30*kM,yP]];
+    const d = flowPhase(rnd(q), i, V, t)*polyLen(pts);
+    let [x,y,seg] = polyAt(pts, d);
+    if (seg === 1) x += swirl(y, rnd(q+3)*TAU) * (1 - smooth((y-by)/(yCone-by+1)));
+    const spin = TAU*(rnd(q+4) + (gg%2 ? 1 : -1)*t);
+    // CO + H2O -> CO2 + H2 somewhere in the shift bed: CO turns into CO2 and
+    // a fresh H2 emerges right behind it
+    const dS = polyLen(pts.slice(0,9)) + (yShB+shD - lerp(yShB-16, yShT+30, rnd(q+5)));
+    let sp = g;
+    if (g === "CO" && d >= dS){
+      sp = "CO2";
+      glow(ctx, x, y, gl, 1 - (d-dS)/gl);
+      const d2 = d - 14*kM;
+      if (d2 >= dS){
+        const [x2,y2] = polyAt(pts, d2);
+        ctx.globalAlpha = smooth((d2-dS)/(18*kM));
+        drawGasMol(ctx, GASES.H2, x2, y2, ms, -spin);
+      }
+    }
+    ctx.globalAlpha = smooth(d/40);
+    drawGasMol(ctx, GASES[sp], x, y, ms, spin);
+    ctx.globalAlpha = 1;
+  } g0 += nn; }
+  // feeds consumed on the way: slurry water and O2 in the flame, steam in the shift bed
+  const feedMol = (g, n, pts, seed) => {
+    const L = polyLen(pts);
+    for (let i=0;i<flowCount(n, V);i++){
+      const q = Math.floor(i/M)*29+seed, u = flowPhase(rnd(q), i, V, t);
+      if (u > 0.6) continue;
+      const d = u/0.6*L, [x,y] = polyAt(pts, d);
+      ctx.globalAlpha = 1 - smooth((d-(L-50))/50);
+      drawGasMol(ctx, GASES[g], x, y, ms, TAU*(rnd(q+4) + t));
+      ctx.globalAlpha = 1;
+    }
+  };
+  feedMol("H2O", P.nH2O, [[-30,yF],[xCoal,yF],[xCoal,yTip],[cx-20,yTop+60]], 5);
+  feedMol("O2",  P.nO2,  [[W+30,yF],[xO2,yF],[xO2,yTip],[cx+20,yTop+60]], 7);
+  feedMol("H2O", P.nSteam, [[W+30,yOut],[xSh,yOut],[xSh,yShB-20]], 13);
+  // coal particles: shrink as they burn, melt to slag at the throat, freeze
+  // in the quench water and leave through the bottom
+  for (let i=0;i<flowCount(P.nCoal, V);i++){
+    const gc = Math.floor(i/M), q = gc*31+17, ph = rnd(q+3)*TAU;
+    const pts = [[-30,yF],[xCoal,yF],[xCoal,yTip],[cx,yTop+30],[cx,yCone],[cx,yFl],
+                 [cx,yW+30],[cx,yQ1+24*kV],[cx,H+30]];
+    const d = flowPhase(rnd(q), i, V, t)*polyLen(pts);
+    let [x,y,seg] = polyAt(pts, d);
+    if (seg === 4) x += swirl(y, ph);
+    const f = seg <= 3 ? 0 : clamp((y-yTop-30)/(yFl-yTop-30), 0, 1);
+    const r = lerp(5.5, 2.6, f)*kCo;
+    if (y > yW){
+      ctx.fillStyle = "#44403c"; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    } else if (f > 0.8){
+      ctx.fillStyle = mixColor("#1c1917", "#f97316", smooth((f-0.8)/0.2));
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    } else {
+      const a0 = TAU*(rnd(q+5) + (gc%2 ? 1 : -1)*t);
+      ctx.fillStyle = "#1c1917"; ctx.beginPath();
+      for (let v=0;v<7;v++){
+        const a = a0 + v*TAU/7, rr = r*(0.75 + 0.4*rnd(q*7+v));
+        v ? ctx.lineTo(x+Math.cos(a)*rr, y+Math.sin(a)*rr) : ctx.moveTo(x+Math.cos(a)*rr, y+Math.sin(a)*rr);
+      }
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  // quench water (drawn over what is submerged), dip tube, shell outline
+  ctx.save(); shell(); ctx.clip();
+  ctx.fillStyle = "rgba(56,189,248,0.38)"; ctx.fillRect(cx-ro, yW, 2*ro, yQ1+30*kV-yW);
+  ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.3;
+  for (let b=0;b<9;b++){
+    const ph = (rnd(b*11+2) + 2*t) % 1, bx = cx + lerp(rt+8, ro-10, rnd(b*11+5))*(b%3 ? 1 : -1);
+    ctx.globalAlpha = 1-ph*0.6; ctx.beginPath(); ctx.arc(bx, lerp(yW+30, yW+3, ph), 1.4+1.6*ph, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.restore();
+  ctx.strokeStyle = "#475569"; ctx.lineWidth = 3;
+  for (const sx of [-1,1]){ ctx.beginPath(); ctx.moveTo(cx+sx*rt, yFl); ctx.lineTo(cx+sx*rt, yW+6); ctx.stroke(); }
+  shell(); ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
+
+  // labels
+  arrow(ctx, 4, yF, 40, yF, "#57534e", 3, 8);
+  text(ctx, P.coalLabel, 15, yF-19*kX, {size:14.5*kX, bold:true, color:"#57534e", align:"left"});
+  arrow(ctx, W-4, yF, W-40, yF, "#1d4ed8", 3, 8);
+  text(ctx, P.o2Label, W-19, yF-19*kX, {size:14.5*kX, bold:true, color:"#1d4ed8", align:"right"});
+  text(ctx, P.syngasLabel, (xSc0+xSc1)/2, ySc0-14*kX, {size:12*kX, bold:true, color:"#b45309"});
+  arrow(ctx, W-4, yOut, W-36, yOut, "#0284c7", 3, 8);
+  text(ctx, P.steamLabel, W-19, yOut+18*kX, {size:12.5*kX, bold:true, color:"#0284c7", align:"right"});
+  arrow(ctx, W-40, yP, W-6, yP, "#2563eb", 3.5, 9);
+  text(ctx, P.prodLabel, W-19, yP-20*kX, {size:14.5*kX, bold:true, color:"#2563eb", align:"right"});
+  const xShL = xSh-shW/2-10;
+  text(ctx, P.shiftLabel, xShL, yShT+22*kX, {size:12.5*kX, bold:true, color:lab, align:"right"});
+  text(ctx, P.shiftCat, xShL, yShT+40*kX, {size:11*kX, color:"#64748b", align:"right"});
+  text(ctx, P.scrubLabel, (xSc0+xSc1)/2, ySc1+14*kX, {size:11.5*kX, color:lab});
+  text(ctx, P.gasifLabel, xR, yTop+48, {size:13.5*kX, bold:true, color:lab, align:"left"});
+  text(ctx, P.condLabel, xR, yTop+48+19*kX, {size:11.5*kX, color:"#64748b", align:"left"});
+  const xLft = cx-ro-12;
+  text(ctx, "flame zone", xLft, yTop+50, {size:11.5*kX, color:"#c2410c", align:"right"});
+  text(ctx, "refractory lining", xLft, yCone-20, {size:11.5*kX, color:shade(P.brickColor,-30), align:"right"});
+  text(ctx, "water quench", xLft, yW+22, {size:11.5*kX, color:"#0369a1", align:"right"});
+  text(ctx, P.slagLabel, cx-12, H-24, {size:12.5*kX, bold:true, color:"#44403c", align:"right"});
+  if (P.showEq){
+    text(ctx, "C + ½ O₂ → CO   ΔH° = −111 kJ/mol", xe, yEq, {size:12*kX, color:lab, align:"left"});
+    text(ctx, "C + H₂O → CO + H₂   ΔH° = +131 kJ/mol", xe, yEq+27*kX, {size:12*kX, color:lab, align:"left"});
+    text(ctx, "CO + H₂O ⇌ CO₂ + H₂   ΔH° = −41 kJ/mol", xe, yEq+54*kX, {size:12*kX, color:lab, align:"left"});
+  }
+  ctx.restore();
 }
 
 function drawSurface(ctx,t,P,W,H){
@@ -1129,6 +1812,32 @@ const TEMPLATES = {
       {key:"membLabel", label:"Membrane label",     type:"text", def:"Crumpled GO (cGO) membrane"},
     ],
   },
+  polymer: {
+    name: "Polymeric membrane (solution–diffusion)",
+    desc: "Dense polymer film with entangled chains and no size-sieving pores: both gases dissolve at the feed face, hop between free-volume elements and desorb into the permeate. Gas A diffuses faster, gas B is more soluble, so both get through — high flux, low selectivity (the Robeson trade-off). Defaults show H₂/CO₂.",
+    draw: drawPolymer,
+    canvas: {w:800, h:500},
+    params: [
+      {key:"gasA",          label:"Gas A (fast diffuser)", type:"select", def:"H2",  options:GAS_OPTIONS},
+      {key:"gasB",          label:"Gas B (more soluble)",  type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"permA",         label:"Gas A permeated (%)", type:"range", min:0, max:100, step:5, def:85},
+      {key:"permB",         label:"Gas B permeated (%)", type:"range", min:0, max:100, step:5, def:65},
+      {key:"membraneColor", label:"Polymer",             type:"color", def:"#7c3aed"},
+      {key:"chains",        label:"Polymer chains",      type:"range", min:4, max:24, step:1, def:10},
+      {key:"nA",            label:"Gas A molecules",     type:"range", min:4, max:30, step:1, def:14},
+      {key:"nB",            label:"Gas B molecules",     type:"range", min:2, max:20, step:1, def:10},
+      {key:"speed",         label:"Flow speed",          type:"range", min:1, max:3, step:1, def:1},
+      {key:"showVerdict",   label:"Flux/selectivity tags", type:"checkbox", def:true},
+      {key:"title",         label:"Title",               type:"text",  def:""},
+      {key:"feedLabel",     label:"Feed label",          type:"text",  def:"auto"},
+      {key:"retLabel",      label:"Retentate label",     type:"text",  def:"auto"},
+      {key:"permLabel",     label:"Permeate label",      type:"text",  def:"auto"},
+      {key:"membLabel",     label:"Membrane label",      type:"text",  def:"dense polymer membrane"},
+      {key:"mechLabel",     label:"Mechanism label",     type:"text",  def:"solution–diffusion via free volume"},
+      {key:"fluxLabel",     label:"Flux tag",            type:"text",  def:"✓ fast permeation"},
+      {key:"selLabel",      label:"Selectivity tag",     type:"text",  def:"✗ low H₂/CO₂ selectivity"},
+    ],
+  },
   psa: {
     name: "Pressure swing adsorption (PSA)",
     desc: "Twin-bed PSA cycle: one column adsorbs gas B at high pressure while gas A passes through as product; meanwhile the other column is blown down to low pressure, releasing gas B to the off-gas. The beds swap roles every half cycle — watch the gauges and valves switch. Defaults show H₂ purification with CO₂ adsorbed on a zeolite bed.",
@@ -1147,6 +1856,106 @@ const TEMPLATES = {
       {key:"bedLabel", label:"Adsorbent label",  type:"text", def:"zeolite adsorbent"},
       {key:"hiLabel",  label:"High-P label",     type:"text", def:"high P · adsorbing"},
       {key:"loLabel",  label:"Low-P label",      type:"text", def:"low P · regenerating"},
+    ],
+  },
+  cryo: {
+    name: "Cryogenic distillation (tray column)",
+    desc: "A cryogenic tray column. The cooled, expanded feed enters mid-column; the more volatile gas rises as vapour through the trays to the condenser and leaves overhead, while the less volatile gas condenses, runs across each tray and down each downcomer, and collects in the reboiler sump as the liquid bottoms product. Reflux returns from the condenser; the liquid on the trays shifts in colour as it gets richer in the heavy component. Defaults show H₂/CO₂ separation at ~30 bar (e.g. pre-combustion capture): H₂ stays non-condensable and leaves overhead, CO₂ is taken off as liquid; pick N₂/O₂ for air separation.",
+    draw: drawCryo,
+    canvas: {w:720, h:800},
+    params: [
+      {key:"gasL",       label:"Volatile gas (top)",   type:"select", def:"H2", options:GAS_OPTIONS},
+      {key:"gasH",       label:"Heavy gas (bottom)",   type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"colColor",   label:"Column / trays",       type:"color", def:"#475569"},
+      {key:"trays",      label:"Trays",                type:"range", min:6, max:12, step:1, def:8},
+      {key:"nL",         label:"Volatile molecules",   type:"range", min:4, max:30, step:1, def:18},
+      {key:"nH",         label:"Heavy molecules",      type:"range", min:2, max:20, step:1, def:9},
+      {key:"speed",      label:"Flow speed",           type:"range", min:1, max:3, step:1, def:1},
+      {key:"showT",      label:"Temperature gradient", type:"checkbox", def:true},
+      {key:"feedLabel",  label:"Feed label",           type:"text", def:"auto"},
+      {key:"topLabel",   label:"Top product label",    type:"text", def:"auto"},
+      {key:"botLabel",   label:"Bottoms label",        type:"text", def:"auto"},
+      {key:"hxLabel",    label:"Heat exchanger label", type:"text", def:"heat exchanger"},
+      {key:"valveLabel", label:"Valve label",          type:"text", def:"J–T valve"},
+      {key:"condLabel",  label:"Condenser label",      type:"text", def:"condenser (coolant)"},
+      {key:"rebLabel",   label:"Reboiler label",       type:"text", def:"reboiler (heat in)"},
+      {key:"rectLabel",  label:"Upper section label",  type:"text", def:"rectifying"},
+      {key:"stripLabel", label:"Lower section label",  type:"text", def:"stripping"},
+    ],
+  },
+  smr: {
+    name: "Steam methane reforming (SMR)",
+    desc: "Natural gas and steam enter a top-fired reformer and flow down Ni catalyst tubes heated by burner flames, where CH₄ + H₂O → CO + 3 H₂. The syngas is cooled in a waste-heat boiler, then CO + H₂O → CO₂ + H₂ in the water–gas shift reactor, giving H₂ + CO₂ for PSA or CO₂ capture. Each packet enters as CH₄ + 2 H₂O and leaves as CO₂ + 4 H₂; every molecule flashes as it changes species.",
+    draw: drawSMR,
+    canvas: {w:800, h:560},
+    params: [
+      {key:"tubes",      label:"Reformer tubes",     type:"range", min:2, max:4, step:1, def:3},
+      {key:"nPack",      label:"Gas packets",        type:"range", min:3, max:18, step:1, def:12},
+      {key:"speed",      label:"Flow speed",         type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"furnW",      label:"Furnace width %",    type:"range", min:50, max:200, step:5, def:100},
+      {key:"furnH",      label:"Furnace height %",   type:"range", min:50, max:200, step:5, def:100},
+      {key:"tubeSize",   label:"Tube width %",       type:"range", min:50, max:200, step:5, def:100},
+      {key:"pelletSize", label:"Catalyst pellet %",  type:"range", min:50, max:200, step:5, def:100},
+      {key:"flameSize",  label:"Flame size %",       type:"range", min:30, max:200, step:5, def:100},
+      {key:"boilerSize", label:"Boiler size %",      type:"range", min:50, max:200, step:5, def:100},
+      {key:"shiftW",     label:"Shift reactor width %",  type:"range", min:50, max:250, step:5, def:100},
+      {key:"shiftH",     label:"Shift reactor height %", type:"range", min:40, max:200, step:5, def:100},
+      {key:"molSize",    label:"Molecule size %",    type:"range", min:50, max:250, step:5, def:100},
+      {key:"pipeSize",   label:"Pipe thickness %",   type:"range", min:50, max:250, step:5, def:100},
+      {key:"textSize",   label:"Label size %",       type:"range", min:60, max:200, step:5, def:100},
+      {key:"wallColor",  label:"Furnace wall",       type:"color", def:"#9a3412"},
+      {key:"tubeColor",  label:"Tube wall",          type:"color", def:"#475569"},
+      {key:"catColor",   label:"Reforming catalyst", type:"color", def:"#64748b"},
+      {key:"shiftColor", label:"Shift catalyst",     type:"color", def:"#b45309"},
+      {key:"showEq",     label:"Reaction equations", type:"checkbox", def:true},
+      {key:"feedLabel",  label:"Feed label",         type:"text", def:"CH₄ + H₂O (steam)"},
+      {key:"prodLabel",  label:"Product label",      type:"text", def:"H₂ + CO₂ → PSA"},
+      {key:"refLabel",   label:"Reformer label",     type:"text", def:"reformer: Ni/Al₂O₃ tubes, 800–900 °C, 20–30 bar"},
+      {key:"fuelLabel",  label:"Burner label",       type:"text", def:"burners: fuel + air"},
+      {key:"flueLabel",  label:"Flue gas label",     type:"text", def:"flue gas"},
+      {key:"whbLabel",   label:"Boiler label",       type:"text", def:"waste-heat boiler"},
+      {key:"shiftLabel", label:"Shift label",        type:"text", def:"water–gas shift"},
+      {key:"shiftCat",   label:"Shift catalyst label", type:"text", def:"Fe–Cr oxide, 350–450 °C"},
+    ],
+  },
+  gasifier: {
+    name: "Coal gasification (entrained flow)",
+    desc: "An entrained-flow, slagging coal gasifier. Coal–water slurry and O₂ meet at the top burner; in the 1300–1500 °C flame the coal particles swirl down, shrink as they are gasified to CO + H₂ (with some CO₂), and their ash melts into slag. Syngas passes down the dip tube, through the water quench and a scrubber; the slag freezes in the water and drops out the bottom. Steam is then added and the raw syngas goes through a water–gas shift bed, where each CO + H₂O becomes CO₂ + H₂ (the CO flashes into CO₂ and a new H₂ appears behind it), so the product leaving the top is H₂ + CO₂.",
+    draw: drawGasifier,
+    canvas: {w:760, h:680},
+    params: [
+      {key:"nCoal",       label:"Coal particles",   type:"range", min:3, max:20, step:1, def:9},
+      {key:"nCO",         label:"CO molecules",     type:"range", min:0, max:24, step:1, def:10},
+      {key:"nH2",         label:"H₂ molecules",     type:"range", min:0, max:24, step:1, def:9},
+      {key:"nCO2",        label:"CO₂ molecules",    type:"range", min:0, max:10, step:1, def:2},
+      {key:"nO2",         label:"O₂ molecules",     type:"range", min:0, max:12, step:1, def:5},
+      {key:"nH2O",        label:"H₂O (slurry)",     type:"range", min:0, max:12, step:1, def:4},
+      {key:"nSteam",      label:"H₂O (shift steam)", type:"range", min:0, max:12, step:1, def:5},
+      {key:"speed",       label:"Flow speed",       type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"vesselW",     label:"Gasifier width %",   type:"range", min:50, max:200, step:5, def:100},
+      {key:"vesselH",     label:"Gasifier height %",  type:"range", min:50, max:200, step:5, def:100},
+      {key:"flameSize",   label:"Flame size %",       type:"range", min:30, max:200, step:5, def:100},
+      {key:"scrubSize",   label:"Scrubber size %",    type:"range", min:50, max:200, step:5, def:100},
+      {key:"shiftW",      label:"Shift reactor width %",  type:"range", min:50, max:250, step:5, def:100},
+      {key:"shiftH",      label:"Shift reactor height %", type:"range", min:40, max:200, step:5, def:100},
+      {key:"molSize",     label:"Molecule size %",    type:"range", min:50, max:250, step:5, def:100},
+      {key:"coalSize",    label:"Coal particle size %", type:"range", min:50, max:250, step:5, def:100},
+      {key:"pipeSize",    label:"Pipe thickness %",   type:"range", min:50, max:250, step:5, def:100},
+      {key:"textSize",    label:"Label size %",       type:"range", min:60, max:200, step:5, def:100},
+      {key:"brickColor",  label:"Refractory",       type:"color", def:"#c2410c"},
+      {key:"shiftColor",  label:"Shift catalyst",   type:"color", def:"#b45309"},
+      {key:"showEq",      label:"Reaction equations", type:"checkbox", def:true},
+      {key:"coalLabel",   label:"Coal feed label",  type:"text", def:"coal–water slurry"},
+      {key:"o2Label",     label:"Oxidant label",    type:"text", def:"O₂ (from ASU)"},
+      {key:"syngasLabel", label:"Syngas label",     type:"text", def:"raw syngas (CO + H₂)"},
+      {key:"prodLabel",   label:"Product label",    type:"text", def:"H₂ + CO₂ → CO₂ capture"},
+      {key:"steamLabel",  label:"Steam label",      type:"text", def:"steam"},
+      {key:"shiftLabel",  label:"Shift label",      type:"text", def:"water–gas shift"},
+      {key:"shiftCat",    label:"Shift catalyst label", type:"text", def:"Fe–Cr oxide, 350–450 °C"},
+      {key:"slagLabel",   label:"Slag label",       type:"text", def:"slag"},
+      {key:"scrubLabel",  label:"Scrubber label",   type:"text", def:"scrubber"},
+      {key:"gasifLabel",  label:"Gasifier label",   type:"text", def:"entrained-flow gasifier"},
+      {key:"condLabel",   label:"Conditions label", type:"text", def:"1300–1500 °C · 30–70 bar"},
     ],
   },
   surface: {

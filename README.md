@@ -20,6 +20,9 @@ python -m http.server 8321 --directory .   # run from the repo folder
 | Gas separation membrane (2D) | Feed flowing over a horizontal membrane: choose any pair from H₂, He, H₂O, N₂, O₂, CO, CH₄, CO₂ and set the permeated fraction of each — permeating molecules pass through the pores, the rest are swept to the retentate (defaults set up for H₂/CO₂ separation through a graphene oxide membrane) |
 | Crumpled GO membrane — cross-section (cGO) | Strain-crumpled GO laminate with a multidomain structure (Zhang et al., *Nat. Nanotechnol.* 2025): expanded interlayer pockets take gas up quickly, compact domains sieve it — gas A rides the interlayer channel and threads the sieve to the permeate, gas B is mostly swept to the retentate (defaults show H₂/CO₂) |
 | Crumpled GO membrane — 3D view (cGO) | The same separation seen in 3D: a static crumpled graphene oxide flake with H₂ slipping through the wrinkled laminate into the permeate, while bulkier CO₂ is turned away at the surface and sweeps off to the sides. Only the gas moves. Raise “CO₂ break-through” above 0 for a finite rather than perfect selectivity |
+| Cryogenic distillation (tray column) | A cryogenic sieve-tray column: the feed is cooled in a heat exchanger and expanded through a J–T valve into the middle of the column. The volatile gas rises through the trays as vapour to the condenser and leaves overhead; the heavy gas runs across each tray and down each downcomer as liquid into the reboiler sump. Includes reflux droplets, boiling bubbles, tray liquid tinted by composition, rectifying/stripping brackets and a temperature gradient labelled with the boiling points (defaults show H₂/CO₂ at ~30 bar, −50 °C top / −5 °C sump; choose N₂/O₂ for air separation; 720 × 800, ≈ 0.56 MB at 3 s / 20 fps) |
+| Steam methane reforming (SMR) | Top-fired reformer with burner flames and Ni catalyst tubes (CH₄ + H₂O → CO + 3 H₂), a waste-heat boiler, then a water–gas shift bed (CO + H₂O → CO₂ + H₂). Each gas packet enters as CH₄ + 2 H₂O and leaves as CO₂ + 4 H₂; every molecule changes species in place, with a flash, as it crosses a reaction front (800 × 560, ≈ 0.6 MB) |
+| Coal gasification (entrained flow) | Slagging entrained-flow gasifier: coal–water slurry and O₂ meet at the top burner, coal particles swirl down through the flame and shrink as they gasify to CO + H₂ (+ some CO₂), the ash melts to slag at the throat and freezes in the water quench; syngas leaves through the dip tube, quench and scrubber, then takes on steam and passes a water–gas shift bed where each CO becomes CO₂ with a new H₂ behind it, so the product is H₂ + CO₂. Refractory lining, reaction equations with ΔH° (760 × 680, ≈ 0.6 MB) |
 | Pressure swing adsorption (PSA) | Twin-bed PSA cycle: one column adsorbs gas B at high pressure while gas A passes through as product, the other is blown down at low pressure to release gas B as off-gas — beds swap every half cycle, with pressure gauges and valve highlights (defaults show H₂ purification over a zeolite bed) |
 | Catalyst surface reaction | Adsorption → surface reaction (color change) → desorption on an atomic surface |
 | Particle diffusion | Brownian-style particle motion in a container |
@@ -68,3 +71,16 @@ pixel slightly on every frame will blow up the file for no visible gain.
 
 Use only **integer multiples** of `t` inside `sin/cos` (or phase-local motion
 with fade-in/out) so the GIF loops without a visible seam.
+
+The SMR and gasifier templates have a size slider (in %) for every part —
+furnace/gasifier width and height, tubes, pellets, flames, boiler, scrubber,
+shift reactor width and height, molecules, coal particles, pipes and labels.
+They lay themselves out in design units from those sizes (see `fitLayout`), so
+a part that grows pushes its neighbours aside, and the whole drawing shrinks
+to fit the canvas if it no longer does. It never scales up past the default,
+so shrinking one part leaves margin rather than inflating everything else.
+
+For flow slower than one pass per loop, use `flowCount` / `flowPhase` (see the
+SMR and gasifier templates): at speed 1/m every mover gets m copies spaced 1/m
+apart in phase, which hand over to one another at the loop point, so ½×, ⅓× and
+¼× still loop seamlessly.
