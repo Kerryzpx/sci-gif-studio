@@ -552,7 +552,7 @@ function drawCrumpled(ctx,t,P,W,H){
 }
 
 function drawPolymer(ctx,t,P,W,H){
-  const s = W/800;
+  const s = W/800, ms = s*P.molSize/100;                 // ms = molecule scale
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
   // dense polymer film: gas dissolves at the feed face, hops between free-volume
   // elements in the chain tangle, desorbs at the permeate face. No size-sieving
@@ -560,7 +560,14 @@ function drawPolymer(ctx,t,P,W,H){
   const mx0 = W*0.12, mx1 = W*0.88;
   const myT = H*0.42, myB = H*0.64, mt = myB-myT;
   const feedY0 = H*0.17, feedY1 = myT - 14*s;
-  const permY1 = H*0.93, xIn = W*0.02, xOut = W*0.98;
+  // Every molecule loops back to the start of its route once per pass. That
+  // wrap used to happen inside the frame, which read as a stutter -- two dozen
+  // molecules each teleporting the width of the canvas once per cycle. The
+  // ends now sit off the canvas, with room for the largest molecule, and a
+  // short fade covers the permeate exit, which has to finish inside the frame.
+  const margin = 44 + 18*ms;
+  const permY1 = H*0.93, xIn = -margin, xOut = W + margin;
+  const fade = u => smooth(u/0.035)*smooth((1-u)/0.035);
   const slab = () => { ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(mx0, myT, mx1-mx0, mt, 6*s); else ctx.rect(mx0, myT, mx1-mx0, mt); };
   ctx.fillStyle = mixColor(P.membraneColor, "#ffffff", 0.82);
@@ -621,19 +628,25 @@ function drawPolymer(ctx,t,P,W,H){
     const yBase = feedY0 + 12*s + rnd(q+1)*(feedY1-feedY0-24*s);
     return [x, yBase + Math.sin(2*Math.PI*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*5*s, 0];
   };
-  // gas A diffuses faster (twice the loop speed); gas B is more soluble and lingers, but still permeates
-  for (let i=0;i<P.nA;i++){
-    const q = i*5+11;
-    const u = (rnd(q) + t*P.speed*2) % 1;
+  // gas A diffuses faster; gas B is more soluble and lingers at half the rate,
+  // but still permeates. Below 1x each molecule gets 1/v copies spaced evenly
+  // in phase (flowPhase), which hand over at the wrap so the loop still closes.
+  const vA = parseFloat(P.speed), vB = vA/2, mA = flowM(vA), mB = flowM(vB);
+  for (let i=0;i<flowCount(P.nA, vA);i++){
+    const q = Math.floor(i/mA)*5+11;
+    const u = flowPhase(rnd(q), i, vA, t);
     const p = rnd(q+6)*100 < P.permA ? permeatePath(q,u,2.2) : acrossPath(q,u);
-    drawGasMol(ctx, gA, p[0], p[1], s, p[2]);
+    ctx.globalAlpha = fade(u);
+    drawGasMol(ctx, gA, p[0], p[1], ms, p[2]);
   }
-  for (let i=0;i<P.nB;i++){
-    const q = i*9+51;
-    const u = (rnd(q) + t*P.speed) % 1;
+  for (let i=0;i<flowCount(P.nB, vB);i++){
+    const q = Math.floor(i/mB)*9+51;
+    const u = flowPhase(rnd(q), i, vB, t);
     const p = rnd(q+6)*100 < P.permB ? permeatePath(q,u,3.2) : acrossPath(q,u);
-    drawGasMol(ctx, gB, p[0], p[1], s, p[2]);
+    ctx.globalAlpha = fade(u);
+    drawGasMol(ctx, gB, p[0], p[1], ms, p[2]);
   }
+  ctx.globalAlpha = 1;
   // labels + flow arrows ("auto" composes from the selected gases)
   const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
   const retLabel  = P.retLabel  === "auto" ? "retentate" : P.retLabel;
@@ -654,40 +667,313 @@ function drawPolymer(ctx,t,P,W,H){
   }
 }
 
+/* ---- lamellar GO membrane: stacked flakes, tortuous interlayer galleries ---- */
+// A GO laminate is a brick wall of overlapping flakes. Gas cannot cross it in a
+// straight line: it can only run along the gallery between two flakes until that
+// flake ends, drop through the slit, and run along the next gallery. The route is
+// therefore far longer than the film is thick, which is why the permeance is low
+// even though each gallery is wide open to H2 -- and the same gallery height is
+// what sieves anything bigger out. Both readings come from one geometry here: the
+// slits are the gaps where the drawn flakes end, and the molecules walk them.
+function drawLamellar(ctx,t,P,W,H){
+  const kk = key => P[key]/100;
+  const kL = kk("flakeLen"), kD = kk("interlayer"), kT = kk("flakeThick"), kW = kk("membWidth"),
+        kM = kk("molSize"), kS = kk("supSize"), kX = kk("textSize");
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  const hA = Math.max(...gA.atoms.map(a => Math.abs(a.dy)+a.r));
+  const hB = Math.max(...gB.atoms.map(a => Math.abs(a.dy)+a.r));
+  const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
+  const retLabel  = P.retLabel  === "auto" ? gB.label+"-rich retentate"      : P.retLabel;
+  const permLabel = P.permLabel === "auto" ? gA.label+"-rich permeate"       : P.permLabel;
+
+  /* ---- layout in design units (1 unit = 1 px at the default canvas) ---- */
+  const nL = P.layers;
+  const ft = 12*kT;                                   // flake thickness
+  const chan = (2*hA*kM + 5)*kD;                      // gallery height d, keyed to gas A so it always fits
+  const slitW = Math.max(14, gA.w*kM*1.5);            // lateral gap where a flake ends
+  const pitch = 150*kL + slitW;                       // flake length L + slit
+  const memH = nL*ft + (nL-1)*chan;
+  const MW = 620*kW, mX0 = 52, mX1 = mX0 + MW;
+  const st = 22*kS;
+  const nSup = Math.max(2, Math.round(MW/170)), spw = Math.max(20, MW/nSup*0.32);
+  const supX = [];
+  for (let i=0;i<nSup;i++) supX.push(mX0 + MW*(i+0.5)/nSup);
+  const meas = (str,sz) => { ctx.font = `${sz}px "Segoe UI", Arial, sans-serif`; return ctx.measureText(str).width; };
+
+  const yArr = (P.title ? 50 : 34)*kX;                // feed / retentate arrow row
+  const fy0 = yArr + 24*kX, fy1 = fy0 + Math.max(26, 30*kM);
+  const yL  = fy1 + 24*kX;                            // the L dimension sits between feed and membrane
+  const mY  = P.showDims ? yL + 13*kX : fy1 + 14;
+  const mY1 = mY + memH;
+  const sY  = mY1 + 10, sY1 = sY + st;
+  const yExit = sY1 + 26;                             // permeate fades out here, clear of the caption
+  const yPerm = yExit + 16*kX, yTag = yPerm + 20*kX;
+  const VH = (P.showVerdict ? yTag : yPerm) + 14*kX;
+  // the right margin is measured: the d dimension, then the laminate bracket and
+  // its rotated caption, so a longer label pushes the edge out instead of clipping
+  const xD = mX1 + 16, wD = P.showDims ? meas(P.dLabel, 13*kX) + 10 : 0;
+  const xBr = xD + wD + 10;
+  const VW = Math.max(xBr + 12 + 17*kX,
+                      mX1 + 14 + meas(P.supLabel, 12*kX) + 10,
+                      meas(P.fluxLabel, 13*kX) + meas(P.selLabel, 13*kX) + 26,
+                      meas(permLabel, 15*kX) + 30, 480);
+  fitLayout(ctx, W, H, VW, VH, 860, 540);
+  const vtext = (str,x,y,o) => { ctx.save(); ctx.translate(x,y); ctx.rotate(-Math.PI/2); text(ctx,str,0,0,o); ctx.restore(); };
+
+  // slits[r] = the x of every gap in row r. Rows are offset by half a pitch like
+  // brickwork, so a molecule never finds two openings above one another.
+  const slits = [];
+  for (let r=0;r<nL;r++){
+    const a = [];
+    for (let j=0;j<40;j++){
+      const x = mX0 + (j + 0.5 + 0.5*(r%2) + 0.18*(rnd(r*31+j*7+5)-0.5))*pitch;
+      if (x > mX1 - 0.25*pitch) break;
+      if (x > mX0 + 0.25*pitch) a.push(x);
+    }
+    if (!a.length) a.push((mX0+mX1)/2);
+    slits.push(a);
+  }
+  const gyc = r => r < nL-1 ? mY + (r+1)*ft + r*chan + chan/2 : (mY1 + sY)/2;
+
+  /* ---- the laminate ---- */
+  for (let r=0;r<nL;r++){
+    const y = mY + r*(ft+chan);
+    const edges = [mX0];
+    for (const x of slits[r]) edges.push(x-slitW/2, x+slitW/2);
+    edges.push(mX1);
+    for (let k=0;k<edges.length;k+=2){
+      const a = Math.max(mX0, edges[k]), b = Math.min(mX1, edges[k+1]);
+      if (b-a < 2) continue;
+      ctx.fillStyle = shade(P.goColor, ((r+k)%3)*12 - 10);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(a, y, b-a, ft, Math.min(3, ft/3)); else ctx.rect(a, y, b-a, ft);
+      ctx.fill();
+    }
+  }
+  // macroporous support: solid except where the permeate leaves
+  const sEdges = [mX0];
+  for (const x of supX) sEdges.push(x-spw/2, x+spw/2);
+  sEdges.push(mX1);
+  ctx.fillStyle = P.supColor;
+  for (let k=0;k<sEdges.length;k+=2){
+    const a = Math.max(mX0, sEdges[k]), b = Math.min(mX1, sEdges[k+1]);
+    if (b-a < 1) continue;
+    ctx.fillRect(a, sY, b-a, st);
+  }
+  text(ctx, P.supLabel, mX1+12, sY+st/2, {size:12*kX, color:"#475569", align:"left"});
+
+  /* ---- driving force, dimensions, laminate bracket ---- */
+  arrow(ctx, 27, mY-8, 27, sY1+8, "#2563eb", 3, 9);
+  vtext(P.dpLabel, 12, (mY+sY1)/2, {size:13*kX, bold:true, color:"#2563eb"});
+  ctx.strokeStyle = "#334155"; ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(xBr-6, mY); ctx.lineTo(xBr, mY); ctx.lineTo(xBr, mY1); ctx.lineTo(xBr-6, mY1);
+  ctx.stroke();
+  vtext(P.membLabel, xBr + 9 + 7*kX, (mY+mY1)/2, {size:14*kX, bold:true, color:"#334155"});
+  if (P.showDims){
+    const a = slits[0].length > 1 ? slits[0][0]+slitW/2 : mX0+4;
+    const b = slits[0].length > 1 ? slits[0][1]-slitW/2 : slits[0][0]-slitW/2;
+    ctx.strokeStyle = "#334155"; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(a, yL-5); ctx.lineTo(a, yL+5); ctx.moveTo(b, yL-5); ctx.lineTo(b, yL+5);
+    ctx.stroke();
+    arrow(ctx, (a+b)/2, yL, a, yL, "#334155", 1.6, 6);
+    arrow(ctx, (a+b)/2, yL, b, yL, "#334155", 1.6, 6);
+    text(ctx, P.lLabel, (a+b)/2, yL-11*kX, {size:14*kX, bold:true, color:"#334155"});
+    const ya = mY+ft, yb = mY+ft+chan;
+    ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(mX1, ya); ctx.lineTo(xD+6, ya); ctx.moveTo(mX1, yb); ctx.lineTo(xD+6, yb);
+    ctx.stroke();
+    vArrow2(ctx, xD, ya, yb, "#334155", 1);
+    text(ctx, P.dLabel, xD+8, (ya+yb)/2, {size:13*kX, bold:true, color:"#334155", align:"left"});
+  }
+
+  /* ---- routes ---- */
+  const margin = 40 + 18*kM, xIn = -margin, xOut = VW + margin;
+  const fade = u => smooth((1-u)/0.06);
+  // one route through the laminate: in at a slit, then gallery -> slit -> gallery
+  // down the stack, out through the nearest macropore in the support. ins[] marks
+  // the legs inside the film, which are walked P.dwell times slower.
+  const permPath = q => {
+    const yF = fy0 + 6 + rnd(q+2)*Math.max(1, fy1-fy0-12);
+    let x = slits[0][Math.floor(rnd(q+3)*slits[0].length) % slits[0].length];
+    const pts = [[xIn, yF], [x, yF], [x, gyc(0)]], ins = [0, 1];
+    for (let r=1;r<nL;r++){
+      const arr = slits[r];
+      let k = 0;
+      while (k < arr.length-1 && arr[k+1] <= x) k++;
+      if (rnd(q+10+r) > 0.5) k = Math.min(k+1, arr.length-1);   // the opening left or right of here
+      x = arr[k];
+      pts.push([x, gyc(r-1)], [x, gyc(r)]);
+      ins.push(1, 1);
+    }
+    let px = supX[0];
+    for (const sx of supX) if (Math.abs(sx-x) < Math.abs(px-x)) px = sx;
+    pts.push([px, gyc(nL-1)], [px, yExit]);
+    ins.push(1, 0);
+    return {pts, ins};
+  };
+  const walk = (pts, ins, u) => {
+    const cost = [];
+    let tot = 0;
+    for (let i=0;i<pts.length-1;i++){
+      const c = Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]) * (ins[i] ? P.dwell : 1);
+      cost.push(c); tot += c;
+    }
+    let d = u*tot, i = 0;
+    while (i < cost.length-1 && d > cost[i]){ d -= cost[i]; i++; }
+    const f = cost[i] > 0 ? clamp(d/cost[i], 0, 1) : 0;
+    const a0 = Math.atan2(pts[i+1][1]-pts[i][1], pts[i+1][0]-pts[i][0]);
+    const a1 = i+2 < pts.length ? Math.atan2(pts[i+2][1]-pts[i+1][1], pts[i+2][0]-pts[i+1][0]) : a0;
+    return [lerp(pts[i][0], pts[i+1][0], f), lerp(pts[i][1], pts[i+1][1], f),
+            lerp(a0, a1, smooth((f-0.75)/0.25)),               // turn into the next leg, not at it
+            Math.abs(pts[i+1][1]-pts[i][1]) < Math.abs(pts[i+1][0]-pts[i][0])];
+  };
+  // swept along the feed to the retentate; clear > 0 dips the molecule onto the
+  // top flake, where it finds no opening it fits through, and away again
+  const acrossPath = (q, u, clear) => {
+    const x = xIn + u*(xOut-xIn);
+    const yBase = fy0 + 8 + rnd(q+1)*Math.max(1, fy1-fy0-16);
+    let y = yBase, bump = 0;
+    if (clear > 0){
+      const tryX = mX0 + (0.15 + 0.7*rnd(q+2))*MW, sig = VW*0.05;
+      bump = Math.exp(-((x-tryX)**2)/(2*sig*sig));
+      y = yBase + (mY - clear - yBase)*bump;
+    }
+    y += (1-bump)*Math.sin(TAU*((1+Math.floor(rnd(q+3)*2))*t + rnd(q+4)))*4;
+    return [x, y, 0];
+  };
+
+  /* ---- the guide line: the actual route of the first permeating molecule ---- */
+  const v = parseFloat(P.speed), m = flowM(v);
+  if (P.showPath){
+    let gq = -1;
+    for (let i=0;i<Math.ceil(P.nA/m);i++){ const q = i*5+11; if (rnd(q+6)*100 < P.permA){ gq = q; break; } }
+    if (gq >= 0){
+      const pp = permPath(gq).pts.slice(1);
+      pp[pp.length-1] = [pp[pp.length-1][0], sY1+6];   // stop at the support, not in the caption
+      ctx.save();
+      ctx.setLineDash([6,5]); ctx.globalAlpha = 0.8;
+      strokePath(ctx, pp, P.pathColor, 1.8);
+      ctx.restore();
+      // the entry arrow sits inside the gap under the feed caption, so it never
+      // runs into the feed arrow however far left the first opening happens to be
+      arrow(ctx, pp[0][0], fy0-18*kX, pp[0][0], fy0-2, P.pathColor, 2.6, 8);
+      text(ctx, P.pathLabel, pp[0][0]+10, fy0-11*kX, {size:12*kX, bold:true, color:P.pathColor, align:"left"});
+    }
+  }
+
+  /* ---- molecules ---- */
+  const amp = Math.min(2.2, chan*0.14);
+  const move = (g, q, u) => {
+    const pp = permPath(q), p = walk(pp.pts, pp.ins, u);
+    const wob = Math.sin(TAU*((2+Math.floor(rnd(q+7)*3))*t + rnd(q+8)))*amp;
+    ctx.globalAlpha = fade(u);
+    drawGasMol(ctx, g, p[0] + (p[3] ? 0 : wob), p[1] + (p[3] ? wob : 0), kM, p[2]);
+    ctx.globalAlpha = 1;
+  };
+  for (let i=0;i<flowCount(P.nA, v);i++){
+    const q = Math.floor(i/m)*5+11;
+    const u = flowPhase(rnd(q), i, v, t);
+    if (rnd(q+6)*100 < P.permA) move(gA, q, u);
+    else { const p = acrossPath(q, u, 0); drawGasMol(ctx, gA, p[0], p[1], kM, p[2]); }
+  }
+  for (let i=0;i<flowCount(P.nB, v);i++){
+    const q = Math.floor(i/m)*9+51;
+    const u = flowPhase(rnd(q), i, v, t);
+    if (rnd(q+6)*100 < P.permB) move(gB, q, u);
+    else { const p = acrossPath(q, u, hB*kM + 5); drawGasMol(ctx, gB, p[0], p[1], kM, p[2]); }
+  }
+
+  /* ---- captions ---- */
+  const wFeed = meas(feedLabel, 15*kX), wRet = meas(retLabel, 15*kX);
+  const axF = Math.max(mX0+60, wFeed/2 + 4), axR = Math.min(mX1-60, VW - wRet/2 - 4);
+  text(ctx, feedLabel, axF, yArr-15*kX, {size:15*kX, bold:true, color:"#334155"});
+  arrow(ctx, axF-46, yArr, axF+46, yArr, "#334155", 3, 8);
+  text(ctx, retLabel, axR, yArr-15*kX, {size:15*kX, bold:true, color:gB.tint});
+  arrow(ctx, axR-46, yArr, axR+46, yArr, gB.tint, 3, 8);
+  if (P.title) text(ctx, P.title, (mX0+mX1)/2, 20*kX, {size:17*kX, bold:true, color:"#0f172a"});
+  text(ctx, permLabel, (mX0+mX1)/2, yPerm, {size:15*kX, bold:true, color:gA.tint});
+  if (P.showVerdict){
+    text(ctx, P.fluxLabel, 6, yTag, {size:13*kX, bold:true, color:"#b91c1c", align:"left"});
+    text(ctx, P.selLabel, VW-6, yTag, {size:13*kX, bold:true, color:"#15803d", align:"right"});
+  }
+  ctx.restore();
+}
+
 function drawPSA(ctx,t,P,W,H){
-  const s = W/800;
+  const k = key => P[key]/100;
+  const kCw = k("colW"), kCh = k("colH"), kBd = k("beadSize"), kM = k("molSize"),
+        kG = k("gaugeSize"), kP = k("pipeSize"), kX = k("textSize");
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
   // twin-bed PSA: each half of the loop one column adsorbs gas B at high
   // pressure while the other is blown down at low pressure, then they swap
-  const cw = W*0.13, yT = H*0.25, yB = H*0.73;
-  const cx = [W*0.33, W*0.67];
-  const prodY = H*0.115, feedY = H*0.845, offY = H*0.945;
-  const xIn = -30*s, xL = W*0.03, xR = W*0.955, xOut = W + 30*s;
+  // ---- layout in design units: the bead grid sets a floor under the column
+  // size, the gauges set the gap between the two columns, and the labels set
+  // the side margins, so growing one part pushes the rest aside
+  const bRows = 7, bCols = 3, nBeads = bRows*bCols, bR = 8.5*kBd;
+  const bdx = Math.max(30, 2.3*bR);                     // bead column pitch
+  const cw = Math.max(104*kCw, 2*(bdx + 1.5*bR) + 14);  // wide enough for the outer beads + jitter
+  const dome = 10*kCh;
+  const bIns = Math.max(20*kCh, 1.4*bR + 6);            // clearance above/below the bed
+  const rowPitch = Math.max((216*kCh - 2*bIns)/(bRows-1), 2.3*bR);
+  const colH = 2*bIns + (bRows-1)*rowPitch;
+  const gr = 15*kG, gStem = 11*kG;                      // gauge dial + its stub pipe
+  const cx0 = 26 + 160*kX + gr + gStem + cw/2;          // left margin holds the bed label
+  // the columns sit as close together as the right column's gauge and the
+  // state labels underneath them allow; both are measured, so a bigger gauge
+  // or a longer label pushes them apart instead of overlapping
+  ctx.font = `600 ${12.5*kX}px "Segoe UI", Arial, sans-serif`;
+  const wHi = ctx.measureText(P.hiLabel).width, wLo = ctx.measureText(P.loLabel).width;
+  const colGap = Math.max(72, gStem + 2*gr + 20, (wHi + wLo)/2 + 18 - cw);
+  const cx = [cx0, cx0 + cw + colGap];
+  const xR = cx[1] + cw/2 + Math.max(120, 150*kX + 28); // product / off-gas take-off
+  const prodY = 28 + 24*kX;
+  const yT = prodY + 50 + dome, yB = yT + colH;
+  const stateGap = Math.max(34, 20 + 20*kX);            // room for the high/low-P labels
+  const feedY = yB + dome + stateGap;
+  const offY = feedY + Math.max(32, 27*kX + 18);
+  const VW = xR + 34, VH = offY + 27;
+  fitLayout(ctx, W, H, VW, VH, 800, 450);
+  W = VW; H = VH;
+  const xL = 24, xIn = -(20 + 16*kM), xOut = W + 20 + 16*kM;
   const pr0 = smooth(t/0.07) - smooth((t-0.5)/0.07);
   const press = c => c === 0 ? pr0 : 1 - pr0;
   const uh = (2*t) % 1, adsCol = t < 0.5 ? 0 : 1;
-  const bRows = 7, bCols = 3, nBeads = bRows*bCols, bR = 8.5*s;
+  // flow speed: V passes of the feed-to-product path per half cycle. Below 1x
+  // each molecule gets M = 1/V copies spaced 1/M apart in phase (flowPhase),
+  // which hand over at the wrap so the loop still closes.
+  const V = parseFloat(P.speed), M = flowM(V), Vs = Math.min(V, 1);
+  // Gas B makes one trip per half cycle, so it slows by stretching that trip
+  // over more of the half cycle rather than by repeating it. The start stagger
+  // shrinks to match, so every molecule still reaches its bead before the beds
+  // swap and nothing jumps at the changeover.
+  const bwA = Math.min(0.62, 0.32/Vs), bsA = Math.min(0.45, 0.93 - bwA);
+  const bwD = Math.min(0.64, 0.34/Vs), bsD = Math.min(0.40, 0.92 - bwD);
+  const jf1 = Math.max(1, Math.round(3*Vs)), jf2 = Math.max(1, Math.round(2*Vs));
   const beadPos = (c,bi) => {
-    const r = Math.floor(bi/bCols), k = bi%bCols;
-    return [cx[c] + (k-1)*30*s + (rnd(c*97+bi*3)*2-1)*4*s,
-            yT + 20*s + r*(yB-yT-40*s)/(bRows-1) + (rnd(c*97+bi*3+1)*2-1)*3*s];
+    const r = Math.floor(bi/bCols), col = bi%bCols;
+    return [cx[c] + (col-1)*bdx + (rnd(c*97+bi*3)*2-1)*bR*0.47,
+            yT + bIns + r*rowPitch + (rnd(c*97+bi*3+1)*2-1)*bR*0.35];
   };
+  const yJB = yB + dome*0.8, yJT = yT - dome*0.8;       // pipe junctions on the domes
   // piping: gray base, dark overlay on the segments whose valves are open
   const pipe = (x1,y1,x2,y2) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); };
-  ctx.lineCap = "round"; ctx.lineWidth = 5*s; ctx.strokeStyle = "#cbd5e1";
+  ctx.lineCap = "round"; ctx.lineWidth = 5*kP; ctx.strokeStyle = "#cbd5e1";
   pipe(xL, feedY, cx[1], feedY);
   pipe(cx[0], offY, xR, offY);
   pipe(cx[0], prodY, xR, prodY);
-  for (const c of [0,1]){ pipe(cx[c], yB+8*s, cx[c], offY); pipe(cx[c], prodY, cx[c], yT-8*s); }
+  for (const c of [0,1]){ pipe(cx[c], yJB, cx[c], offY); pipe(cx[c], prodY, cx[c], yJT); }
   ctx.strokeStyle = "#64748b";
   for (const c of [0,1]){
     ctx.globalAlpha = press(c);      // feed + product path open while adsorbing
     pipe(xL, feedY, cx[c], feedY);
-    pipe(cx[c], feedY, cx[c], yB+8*s);
-    pipe(cx[c], yT-8*s, cx[c], prodY);
+    pipe(cx[c], feedY, cx[c], yJB);
+    pipe(cx[c], yJT, cx[c], prodY);
     pipe(cx[c], prodY, xR, prodY);
     ctx.globalAlpha = 1 - press(c);  // blowdown path open while regenerating
-    pipe(cx[c], yB+8*s, cx[c], offY);
+    pipe(cx[c], yJB, cx[c], offY);
     pipe(cx[c], offY, xR, offY);
   }
   ctx.globalAlpha = 1;
@@ -695,16 +981,16 @@ function drawPSA(ctx,t,P,W,H){
   for (const c of [0,1]){
     const x0 = cx[c]-cw/2, x1 = cx[c]+cw/2;
     ctx.beginPath();
-    ctx.moveTo(x0, yT+10*s);
-    ctx.quadraticCurveTo(x0, yT-10*s, cx[c], yT-10*s);
-    ctx.quadraticCurveTo(x1, yT-10*s, x1, yT+10*s);
-    ctx.lineTo(x1, yB-10*s);
-    ctx.quadraticCurveTo(x1, yB+10*s, cx[c], yB+10*s);
-    ctx.quadraticCurveTo(x0, yB+10*s, x0, yB-10*s);
+    ctx.moveTo(x0, yT+dome);
+    ctx.quadraticCurveTo(x0, yT-dome, cx[c], yT-dome);
+    ctx.quadraticCurveTo(x1, yT-dome, x1, yT+dome);
+    ctx.lineTo(x1, yB-dome);
+    ctx.quadraticCurveTo(x1, yB+dome, cx[c], yB+dome);
+    ctx.quadraticCurveTo(x0, yB+dome, x0, yB-dome);
     ctx.closePath();
     ctx.fillStyle = P.colColor; ctx.globalAlpha = 0.06 + 0.08*press(c);
     ctx.fill();
-    ctx.globalAlpha = 1; ctx.strokeStyle = P.colColor; ctx.lineWidth = 3*s; ctx.stroke();
+    ctx.globalAlpha = 1; ctx.strokeStyle = P.colColor; ctx.lineWidth = 3; ctx.stroke();
     for (let bi=0; bi<nBeads; bi++){
       const bp = beadPos(c,bi);
       ctx.fillStyle = shade(P.bedColor, (bi%2)*22);
@@ -713,27 +999,27 @@ function drawPSA(ctx,t,P,W,H){
   }
   // pressure gauges: the needle swings between L and H each half cycle
   for (const c of [0,1]){
-    const gx = cx[c]-cw/2-26*s, gy = yT+16*s, gr = 15*s;
-    ctx.strokeStyle = "#64748b"; ctx.lineWidth = 2*s;
+    const gx = cx[c]-cw/2-gStem-gr, gy = yT+gr+4;
+    ctx.strokeStyle = "#64748b"; ctx.lineWidth = 2*kP;
     ctx.beginPath(); ctx.moveTo(gx+gr, gy); ctx.lineTo(cx[c]-cw/2, gy); ctx.stroke();
-    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#475569";
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2*kG;
     ctx.beginPath(); ctx.arc(gx,gy,gr,0,7); ctx.fill(); ctx.stroke();
-    text(ctx,"L",gx-gr*0.55,gy+gr*0.5,{size:7.5*s,color:"#94a3b8"});
-    text(ctx,"H",gx+gr*0.55,gy+gr*0.5,{size:7.5*s,color:"#94a3b8"});
+    text(ctx,"L",gx-gr*0.55,gy+gr*0.5,{size:7.5*kG,color:"#94a3b8"});
+    text(ctx,"H",gx+gr*0.55,gy+gr*0.5,{size:7.5*kG,color:"#94a3b8"});
     const ga = lerp(2.55, 0.6, press(c));
-    ctx.strokeStyle = "#dc2626"; ctx.lineWidth = 2*s;
+    ctx.strokeStyle = "#dc2626"; ctx.lineWidth = 2*kG;
     ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(gx+Math.cos(ga)*gr*0.7, gy-Math.sin(ga)*gr*0.7); ctx.stroke();
-    ctx.fillStyle = "#475569"; ctx.beginPath(); ctx.arc(gx,gy,2.2*s,0,7); ctx.fill();
+    ctx.fillStyle = "#475569"; ctx.beginPath(); ctx.arc(gx,gy,2.2*kG,0,7); ctx.fill();
   }
   // gas B: flies in with the feed and sticks to a bead while its column is at
   // high P; when the column blows down it releases and leaves as off-gas
   for (let i=0;i<P.nB;i++){
     const c = i % 2, q = i*11+31, jx = cx[c];
     const tb = beadPos(c, Math.floor(rnd(q+1)*nBeads));
-    const bx = tb[0] + (rnd(q+7)*2-1)*6*s, by = tb[1] - 4*s + (rnd(q+8)*2-1)*5*s;
+    const bx = tb[0] + (rnd(q+7)*2-1)*0.7*bR, by = tb[1] - 0.47*bR + (rnd(q+8)*2-1)*0.6*bR;
     let x, y, sf;
     if ((t < 0.5) === (c === 0)){
-      const p = clamp((uh - 0.05 - 0.45*rnd(q+2))/0.32, 0, 1);
+      const p = clamp((uh - 0.05 - bsA*rnd(q+2))/bwA, 0, 1);
       const L1 = jx - xIn, L2 = feedY - yB, L3 = yB - by;
       const d = smooth(p)*(L1+L2+L3+Math.abs(bx-jx));
       if (d < L1){ x = xIn + d; y = feedY; }
@@ -742,7 +1028,7 @@ function drawPSA(ctx,t,P,W,H){
       else { x = jx + Math.sign(bx-jx)*(d-L1-L2-L3); y = by; }
       sf = smooth((p-0.85)/0.15);
     } else {
-      const p = clamp((uh - 0.06 - 0.4*rnd(q+3))/0.34, 0, 1);
+      const p = clamp((uh - 0.06 - bsD*rnd(q+3))/bwD, 0, 1);
       const L1 = Math.abs(bx - jx), L2 = offY - by;
       const d = smooth(p)*(L1+L2+xOut-jx);
       if (d < L1){ x = bx - Math.sign(bx-jx)*d; y = by; }
@@ -750,9 +1036,9 @@ function drawPSA(ctx,t,P,W,H){
       else { x = jx + (d-L1-L2); y = offY; }
       sf = 1 - smooth(p/0.12);
     }
-    x += Math.sin(6.283*(3*t + rnd(q+4)))*1.4*s*sf;
-    y += Math.cos(6.283*(2*t + rnd(q+5)))*1.4*s*sf;
-    drawGasMol(ctx, gB, x, y, s, 0);
+    x += Math.sin(TAU*(jf1*t + rnd(q+4)))*1.4*kM*sf;
+    y += Math.cos(TAU*(jf2*t + rnd(q+5)))*1.4*kM*sf;
+    drawGasMol(ctx, gB, x, y, kM, 0);
   }
   // gas A: streams through the adsorbing column to the product line, fading
   // out around the half-cycle boundary while the valves switch over
@@ -761,41 +1047,44 @@ function drawPSA(ctx,t,P,W,H){
   const A1 = jx - xIn, A2 = feedY - yB, A3 = yB - yT, A4 = yT - prodY;
   const tot = A1+A2+A3+A4+xOut-jx;
   ctx.globalAlpha = aWin;
-  for (let i=0;i<P.nA;i++){
-    const q = i*7+13;
-    const d = ((rnd(q) + uh*(P.speed+1)) % 1) * tot;
+  for (let i=0;i<flowCount(P.nA, V);i++){
+    const q = Math.floor(i/M)*7+13;
+    const d = flowPhase(rnd(q), i, V, uh) * tot;
     let x, y;
     if (d < A1){ x = xIn + d; y = feedY; }
     else if (d < A1+A2){ x = jx; y = feedY - (d-A1); }
     else if (d < A1+A2+A3){
       y = yB - (d-A1-A2);
-      x = jx + Math.sin((yB-y)/(26*s) + rnd(q+5)*6.283) * cw*0.26;
+      x = jx + Math.sin((yB-y)/(26*kCh) + rnd(q+5)*TAU) * cw*0.26;
     }
     else if (d < A1+A2+A3+A4){ x = jx; y = yT - (d-A1-A2-A3); }
     else { x = jx + (d-A1-A2-A3-A4); y = prodY; }
-    drawGasMol(ctx, gA, x, y, s, 0);
+    drawGasMol(ctx, gA, x, y, kM, 0);
   }
   ctx.globalAlpha = 1;
   // labels + stream arrows ("auto" composes from the selected gases)
   const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
   const prodLabel = P.prodLabel === "auto" ? gA.label+" product" : P.prodLabel;
   const offLabel  = P.offLabel  === "auto" ? gB.label+"-rich off-gas" : P.offLabel;
-  arrow(ctx, xL, feedY, xL+40*s, feedY, "#334155", 3.5*s, 9*s);
-  text(ctx, feedLabel, W*0.035, feedY-17*s, {size:14.5*s, bold:true, color:"#334155", align:"left"});
-  arrow(ctx, xR-34*s, prodY, xR, prodY, gA.tint, 3.5*s, 9*s);
-  text(ctx, prodLabel, W*0.965, prodY-16*s, {size:14.5*s, bold:true, color:gA.tint, align:"right"});
-  arrow(ctx, xR-34*s, offY, xR, offY, gB.tint, 3.5*s, 9*s);
-  text(ctx, offLabel, W*0.965, offY-15*s, {size:14.5*s, bold:true, color:gB.tint, align:"right"});
+  arrow(ctx, xL, feedY, xL+40, feedY, "#334155", 3.5*kP, 9*kP);
+  text(ctx, feedLabel, xL+4, feedY-(10+7*kX), {size:14.5*kX, bold:true, color:"#334155", align:"left"});
+  arrow(ctx, xR-34, prodY, xR, prodY, gA.tint, 3.5*kP, 9*kP);
+  text(ctx, prodLabel, W-28, prodY-(9+7*kX), {size:14.5*kX, bold:true, color:gA.tint, align:"right"});
+  arrow(ctx, xR-34, offY, xR, offY, gB.tint, 3.5*kP, 9*kP);
+  text(ctx, offLabel, W-28, offY-(8+7*kX), {size:14.5*kX, bold:true, color:gB.tint, align:"right"});
   // column state labels crossfade at each swap
+  const yState = yB + dome + 9 + 6.5*kX;                // tucked under the dome, clear of the feed line
   for (const c of [0,1]){
     const p = press(c);
-    if (p > 0.02){ ctx.globalAlpha = p; text(ctx, P.hiLabel, cx[c], H*0.79, {size:12.5*s, bold:true, color:"#b91c1c"}); }
-    if (p < 0.98){ ctx.globalAlpha = 1-p; text(ctx, P.loLabel, cx[c], H*0.79, {size:12.5*s, bold:true, color:"#1d4ed8"}); }
+    if (p > 0.02){ ctx.globalAlpha = p; text(ctx, P.hiLabel, cx[c], yState, {size:12.5*kX, bold:true, color:"#b91c1c"}); }
+    if (p < 0.98){ ctx.globalAlpha = 1-p; text(ctx, P.loLabel, cx[c], yState, {size:12.5*kX, bold:true, color:"#1d4ed8"}); }
     ctx.globalAlpha = 1;
   }
-  ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
-  ctx.beginPath(); ctx.moveTo(cx[0]-cw/2-2*s, H*0.52); ctx.lineTo(W*0.145, H*0.56); ctx.stroke();
-  text(ctx, P.bedLabel, W*0.03, H*0.585, {size:12.5*s, color:"#334155", align:"left"});
+  ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx[0]-cw/2-2, lerp(yT,yB,0.56)); ctx.lineTo(26+92*kX, lerp(yT,yB,0.65)); ctx.stroke();
+  text(ctx, P.bedLabel, 24, lerp(yT,yB,0.70), {size:12.5*kX, color:"#334155", align:"left"});
+  ctx.restore();
 }
 
 // normal boiling points (K) at 1 atm, for the temperature-gradient labels
@@ -824,55 +1113,84 @@ function polyAt(pts,d){ // point at arc length d along a polyline, plus the segm
 }
 
 function drawCryo(ctx,t,P,W,H){
-  const s = Math.min(W/720, H/800);
+  const kk = key => P[key]/100;
+  const kCw = kk("colW"), kCh = kk("colH"), kTr = kk("traySize"), kM = kk("molSize"),
+        kCo = kk("condSize"), kRb = kk("rebSize"), kHx = kk("hxSize"), kVv = kk("valveSize"),
+        kP = kk("pipeSize"), kX = kk("textSize");
   const gL = GASES[P.gasL], gH = GASES[P.gasH];
   // tray column: the more volatile gas L rises as vapour to the condenser,
   // the less volatile gas H runs down tray by tray as liquid to the sump
-  const N = P.trays, k = 2*Math.max(1, Math.floor(N/4));   // feed tray; even, so reflux lands on the right
-  const cx = W*0.42, cw = 150*s, colL = cx-cw/2, colR = cx+cw/2;
-  const yTop = H*0.17, yBot = H*0.80, dome = 16*s;
-  const ySump = yBot - 44*s, yT0 = yTop + 40*s, yTn = ySump - 46*s;
-  const pitch = (yTn - yT0)/(N-1), liqD = 10*s, dcW = 26*s;
+  const N = P.trays, kf = 2*Math.max(1, Math.floor(N/4));  // feed tray; even, so reflux lands on the right
+  // ---- layout in design units (1 unit = 1 px at the 720x800 default canvas).
+  // The trays stack to give the column its height, the sump is deep enough for
+  // the reboiler coil, and the feed train stacks leftwards from the shell, so
+  // enlarging one part moves the others instead of running into them.
+  const cw = 150*kCw, dome = 16*kCw;
+  const liqD = 10*kTr, dcW = Math.min(26*kTr, cw*0.30);
+  const pitch = Math.max(53.4*kCh, liqD + 22*kTr + 12);    // tray spacing
+  const topPad = Math.max(40*kCh, liqD + 26), botPad = Math.max(46*kCh, liqD + 32);
+  const sumpD = 44*kRb;
+  const condW = 115*kCo, condH = 40*kCo, hxW = 86*kHx, hxH = 34*kHx, vHf = 10*kVv;
+  // the exchanger and valve captions sit side by side under the feed line, so
+  // the layout measures them: the exchanger is inset far enough that its
+  // caption clears the left edge, and the valve is pushed out far enough that
+  // the two never collide. Both follow the label-size slider and custom text.
+  const capW = str => { ctx.font = `${11.5*kX}px "Segoe UI", Arial, sans-serif`; return ctx.measureText(str).width; };
+  const wHx = capW(P.hxLabel), wVv = capW(P.valveLabel);
+  const xHX0 = Math.max(28, wHx/2 - hxW/2 + 8), xHX1 = xHX0 + hxW;
+  const xV = xHX1 + Math.max(38, (wHx + wVv)/2 + 10 - hxW/2) + vHf;
+  const colL = Math.max(xV + vHf + 52, xV + wVv/2 + 16, 24 + 142*kX);  // left margin holds the section brackets
+  const cx = colL + cw/2, colR = colL + cw;
+  const yOH = Math.max(condH/2 + 28, 52*kX + 8);           // overhead line
+  const yTop = yOH + dome + 60;
+  const yT0 = yTop + topPad, yTn = yT0 + (N-1)*pitch;
+  const ySump = yTn + botPad, yBot = ySump + sumpD;
+  const yProd = yBot + dome + Math.max(60, 40*kX + 40);
+  const xC0 = colR + 42, xC1 = xC0 + condW, xRf = xC0 + 20*kCo;
+  const tx = Math.max(xC1 + 44, colR + 170*kX);            // temperature scale
+  const VW = Math.max(tx + 16 + 128*kX, xC1 + 40, colR + 60 + 110*kX);
+  const VH = yProd + Math.max(48, 34*kX + 30);
+  fitLayout(ctx, W, H, VW, VH, 720, 800);
+  W = VW; H = VH;
   const yp = j => yT0 + j*pitch;                          // plate height
-  const side = j => ((j - k) & 1) ? 1 : -1;               // downcomer side (-1 = left)
+  const side = j => ((j - kf) & 1) ? 1 : -1;              // downcomer side (-1 = left)
   const xWeir = j => cx + side(j)*(cw/2 - dcW);
   const xDc = j => cx + side(j)*(cw/2 - dcW/2);
-  const yOH = H*0.075, xC0 = W*0.58, xC1 = W*0.74, xRf = xC0 + 20*s;
-  const yFeed = yp(k) - liqD - 14*s, yProd = H*0.92;
-  const xHX0 = W*0.04, xHX1 = W*0.16, xV = W*0.23;
+  const yFeed = yp(kf) - liqD - 14;
   const mix = (f,w) => { const a = hex2rgb(gL.tint), b = hex2rgb(gH.tint);
     return `rgb(${[0,1,2].map(i => Math.round(lerp(lerp(a[i],b[i],f),255,w))).join(",")})`; };
   const trayF = j => (j+1)/(N+1);                         // liquid gets richer in H going down
   const pipe = (pts,col,w) => { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.lineJoin = "round";
     ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for (const p of pts.slice(1)) ctx.lineTo(p[0],p[1]); ctx.stroke(); };
-  const zigzag = (x0,x1,y,amp,n,col) => { ctx.strokeStyle = col; ctx.lineWidth = 1.8*s; ctx.beginPath();
+  const zigzag = (x0,x1,y,amp,n,col,lw) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
     for (let i=0;i<=n;i++){ const x = lerp(x0,x1,i/n), yy = y + (i%2 ? -amp : amp); i ? ctx.lineTo(x,yy) : ctx.moveTo(x,yy); }
     ctx.stroke(); };
 
   // ---- piping: warm feed gray, cold side blue
-  const yRf = yp(0) - liqD - 12*s;
-  pipe([[-10,yFeed],[xHX0,yFeed]], "#cbd5e1", 5*s);
-  pipe([[xHX1,yFeed],[colL,yFeed]], "#93c5fd", 5*s);
-  pipe([[cx,yTop-dome],[cx,yOH],[xC0,yOH]], "#93c5fd", 5*s);
-  pipe([[xC1,yOH],[W+10,yOH]], "#93c5fd", 5*s);
-  pipe([[xRf,yOH+20*s],[xRf,yRf],[colR,yRf]], mix(0.1,0.35), 4*s);
-  pipe([[cx,yBot+dome],[cx,yProd],[W+10,yProd]], mix(1,0.35), 5*s);
+  const yRf = yp(0) - liqD - 12;
+  pipe([[-10,yFeed],[xHX0,yFeed]], "#cbd5e1", 5*kP);
+  pipe([[xHX1,yFeed],[colL,yFeed]], "#93c5fd", 5*kP);
+  pipe([[cx,yTop-dome],[cx,yOH],[xC0,yOH]], "#93c5fd", 5*kP);
+  pipe([[xC1,yOH],[W+10,yOH]], "#93c5fd", 5*kP);
+  pipe([[xRf,yOH+condH/2],[xRf,yRf],[colR,yRf]], mix(0.1,0.35), 4*kP);
+  pipe([[cx,yBot+dome],[cx,yProd],[W+10,yProd]], mix(1,0.35), 5*kP);
 
   // ---- main heat exchanger and J-T expansion valve
-  ctx.fillStyle = "#f1f5f9"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2*s;
-  ctx.beginPath(); ctx.roundRect(xHX0, yFeed-17*s, xHX1-xHX0, 34*s, 5*s); ctx.fill(); ctx.stroke();
-  zigzag(xHX0+6*s, xHX1-6*s, yFeed, 9*s, 10, "#60a5fa");
+  ctx.fillStyle = "#f1f5f9"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(xHX0, yFeed-hxH/2, hxW, hxH, 5*kHx); ctx.fill(); ctx.stroke();
+  zigzag(xHX0+6*kHx, xHX1-6*kHx, yFeed, hxH*0.265, 10, "#60a5fa", 1.8*kHx);
   ctx.fillStyle = "#475569";
-  ctx.beginPath(); ctx.moveTo(xV-10*s,yFeed-8*s); ctx.lineTo(xV+10*s,yFeed+8*s); ctx.lineTo(xV+10*s,yFeed-8*s);
-  ctx.lineTo(xV-10*s,yFeed+8*s); ctx.closePath(); ctx.fill();
-  ctx.fillRect(xV-1*s, yFeed-16*s, 2*s, 8*s); ctx.fillRect(xV-6*s, yFeed-18*s, 12*s, 3*s);
+  ctx.beginPath(); ctx.moveTo(xV-vHf,yFeed-0.8*vHf); ctx.lineTo(xV+vHf,yFeed+0.8*vHf); ctx.lineTo(xV+vHf,yFeed-0.8*vHf);
+  ctx.lineTo(xV-vHf,yFeed+0.8*vHf); ctx.closePath(); ctx.fill();
+  ctx.fillRect(xV-0.1*vHf, yFeed-1.6*vHf, 0.2*vHf, 0.8*vHf);
+  ctx.fillRect(xV-0.6*vHf, yFeed-1.8*vHf, 1.2*vHf, 0.3*vHf);
 
   // ---- overhead condenser with coolant in/out
-  ctx.fillStyle = "#e0f2fe"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2*s;
-  ctx.beginPath(); ctx.roundRect(xC0, yOH-20*s, xC1-xC0, 40*s, 18*s); ctx.fill(); ctx.stroke();
-  zigzag(xC0+14*s, xC1-14*s, yOH, 10*s, 8, "#38bdf8");
-  arrow(ctx, xC1-22*s, yOH-36*s, xC1-22*s, yOH-21*s, "#0284c7", 2*s, 6*s);
-  arrow(ctx, xC0+22*s, yOH-21*s, xC0+22*s, yOH-36*s, "#0284c7", 2*s, 6*s);
+  ctx.fillStyle = "#e0f2fe"; ctx.strokeStyle = "#475569"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(xC0, yOH-condH/2, condW, condH, condH*0.45); ctx.fill(); ctx.stroke();
+  zigzag(xC0+14*kCo, xC1-14*kCo, yOH, condH*0.25, 8, "#38bdf8", 1.8*kCo);
+  arrow(ctx, xC1-22*kCo, yOH-condH/2-16*kCo, xC1-22*kCo, yOH-condH/2-1, "#0284c7", 2*kCo, 6*kCo);
+  arrow(ctx, xC0+22*kCo, yOH-condH/2-1, xC0+22*kCo, yOH-condH/2-16*kCo, "#0284c7", 2*kCo, 6*kCo);
 
   // ---- column shell and sump
   const shell = () => { ctx.beginPath();
@@ -884,13 +1202,13 @@ function drawCryo(ctx,t,P,W,H){
   ctx.save(); shell(); ctx.clip();
   ctx.fillStyle = mix(1,0.6); ctx.fillRect(colL, ySump, cw, yBot+dome-ySump);
   ctx.restore();
-  const yCoil = ySump + 24*s;                             // reboiler coil
-  zigzag(colR, colL+18*s, yCoil, 6*s, 12, "#dc2626");
-  const bubble = (x,y,r,a) => { ctx.globalAlpha = a; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.3*s;
+  const yCoil = ySump + sumpD*0.545;                      // reboiler coil
+  zigzag(colR, colL+18*kCw, yCoil, 6*kRb, 12, "#dc2626", 1.8*kRb);
+  const bubble = (x,y,r,a) => { ctx.globalAlpha = a; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.3*kTr;
     ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.stroke(); ctx.globalAlpha = 1; };
   for (let b=0;b<10;b++){
     const ph = (rnd(b*13+5) + 2*t) % 1;
-    bubble(lerp(colL+22*s, colR-10*s, rnd(b*13+1)), yCoil - ph*(yCoil-ySump-3*s), (1.5+1.8*ph)*s, 1-ph*0.7);
+    bubble(lerp(colL+22, colR-10, rnd(b*13+1)), yCoil - ph*(yCoil-ySump-3), (1.5+1.8*ph)*kRb, 1-ph*0.7);
   }
 
   // ---- trays: liquid pool with a moving surface, plate, weir + downcomer apron
@@ -902,53 +1220,54 @@ function drawCryo(ctx,t,P,W,H){
     ctx.fillStyle = mix(f,0.62);
     ctx.fillRect(dx0, yDc, dx1-dx0, yNext - yDc);         // liquid backed up in the downcomer
     ctx.beginPath(); ctx.moveTo(xa, y);
-    for (let x = xa; x <= xb+0.1; x += 5*s)
-      ctx.lineTo(x, y - liqD + Math.sin(6.283*2*t + x/(12*s) + j*1.7)*1.4*s);
+    for (let x = xa; x <= xb+0.1; x += 5)
+      ctx.lineTo(x, y - liqD + Math.sin(TAU*2*t + x/12 + j*1.7)*1.4*kTr);
     ctx.lineTo(xb, y); ctx.closePath(); ctx.fill();
     for (let b=0;b<6;b++){
       const ph = (rnd(j*31+b+7) + 2*t) % 1;
-      bubble(lerp(xa+8*s, xb-8*s, rnd(j*31+b)), y - 1.5*s - ph*(liqD-3*s), (1+1.3*ph)*s, 1-ph*0.6);
+      bubble(lerp(xa+8, xb-8, rnd(j*31+b)), y - 1.5*kTr - ph*(liqD-3*kTr), (1+1.3*ph)*kTr, 1-ph*0.6);
     }
     ctx.strokeStyle = P.colColor; ctx.lineCap = "butt";
-    ctx.lineWidth = 3*s; ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
-    ctx.lineWidth = 2*s; ctx.beginPath();
-    ctx.moveTo(xw, y - liqD - 2*s); ctx.lineTo(xw, j < N-1 ? yNext - liqD - 5*s : ySump + 4*s); ctx.stroke();
+    ctx.lineWidth = 3*kTr; ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+    ctx.lineWidth = 2*kTr; ctx.beginPath();
+    ctx.moveTo(xw, y - liqD - 2); ctx.lineTo(xw, j < N-1 ? yNext - liqD - 5 : ySump + 4); ctx.stroke();
   }
-  shell(); ctx.strokeStyle = P.colColor; ctx.lineWidth = 3*s; ctx.stroke();
+  shell(); ctx.strokeStyle = P.colColor; ctx.lineWidth = 3; ctx.stroke();
 
   // ---- reflux droplets run back from the condenser onto the top tray
-  const rfPts = [[xRf,yOH+20*s],[xRf,yRf],[colR-6*s,yRf],[colR-14*s,yp(0)-liqD]];
+  const rfPts = [[xRf,yOH+condH/2],[xRf,yRf],[colR-6,yRf],[colR-14,yp(0)-liqD]];
   const rfL = polyLen(rfPts);
   ctx.fillStyle = mix(0.1,0.2);
   for (let i=0;i<6;i++){
     const u = (i/6 + 2*t) % 1, [x,y] = polyAt(rfPts, u*rfL);
     ctx.globalAlpha = smooth(u/0.08)*smooth((1-u)/0.08);  // fade at both ends: no pop at the wrap
-    ctx.beginPath(); ctx.arc(x,y,2.6*s,0,7); ctx.fill();
+    ctx.beginPath(); ctx.arc(x,y,2.6*kM,0,7); ctx.fill();
   }
   ctx.globalAlpha = 1;
 
   // ---- molecules (each walks its own closed route once per loop)
-  const tumble = (q,i) => 6.283*(rnd(q+9) + (i%2 ? 1 : -1)*t);
-  const lane = cw/2 - dcW - 10*s;
+  const tumble = (q,i) => TAU*(rnd(q+9) + (i%2 ? 1 : -1)*t);
+  const lane = cw/2 - dcW - 10;
+  const xOff = -(20 + 16*kM), xEnd = W + 20 + 16*kM;      // off-canvas ends, clear at any molecule size
   for (let i=0;i<P.nH;i++){                               // heavy: across each tray, down each downcomer
     const q = i*17+41;
-    const pts = [[-30*s,yFeed],[colL+6*s,yFeed],[cx + lerp(-lane*0.3, lane, rnd(q+1)), yp(k)-liqD/2]];
-    for (let j=k;j<N;j++){
+    const pts = [[xOff,yFeed],[colL+6,yFeed],[cx + lerp(-lane*0.3, lane, rnd(q+1)), yp(kf)-liqD/2]];
+    for (let j=kf;j<N;j++){
       const sd = side(j);
-      pts.push([xWeir(j) - sd*5*s, yp(j)-liqD/2], [xWeir(j), yp(j)-liqD-3*s], [xDc(j), yp(j)-liqD+2*s]);
-      pts.push(j < N-1 ? [xDc(j), yp(j+1)-liqD/2] : [xDc(j), ySump+12*s]);
+      pts.push([xWeir(j) - sd*5, yp(j)-liqD/2], [xWeir(j), yp(j)-liqD-3], [xDc(j), yp(j)-liqD+2]);
+      pts.push(j < N-1 ? [xDc(j), yp(j+1)-liqD/2] : [xDc(j), ySump+sumpD*0.27]);
     }
-    pts.push([cx, ySump+30*s],[cx, yProd],[W+30*s, yProd]);
+    pts.push([cx, ySump+sumpD*0.68],[cx, yProd],[xEnd, yProd]);
     const [x,y] = polyAt(pts, ((rnd(q) + t*P.speed) % 1)*polyLen(pts));
-    drawGasMol(ctx, gH, x, y, s, tumble(q,i));
+    drawGasMol(ctx, gH, x, y, kM, tumble(q,i));
   }
   for (let i=0;i<P.nL;i++){                               // light: straight up through the trays as vapour
     const q = i*13+7, ox = (rnd(q+1)*2-1)*lane;
-    const pts = [[-30*s,yFeed],[colL+6*s,yFeed],[cx+ox, yFeed-22*s],[cx+ox, yTop+6*s],
-                 [cx, yTop-dome+4*s],[cx, yOH],[xC1, yOH],[W+30*s, yOH]];
+    const pts = [[xOff,yFeed],[colL+6,yFeed],[cx+ox, yFeed-22],[cx+ox, yTop+6],
+                 [cx, yTop-dome+4],[cx, yOH],[xC1, yOH],[xEnd, yOH]];
     let [x,y,seg] = polyAt(pts, ((rnd(q) + t*P.speed) % 1)*polyLen(pts));
-    if (seg === 3) x += Math.sin(y/(9*s) + rnd(q+3)*6.283)*3*s;
-    drawGasMol(ctx, gL, x, y, s, tumble(q,i));
+    if (seg === 3) x += Math.sin(y/9 + rnd(q+3)*TAU)*3;
+    drawGasMol(ctx, gL, x, y, kM, tumble(q,i));
   }
 
   // ---- labels ("auto" composes from the selected gases)
@@ -957,40 +1276,42 @@ function drawCryo(ctx,t,P,W,H){
   const topLabel  = P.topLabel  === "auto" ? gL.label+" product (top)" : P.topLabel;
   const botLabel  = P.botLabel  === "auto" ? "liquid "+gH.label+" (bottoms)" : P.botLabel;
   const lab = "#334155";
-  text(ctx, feedLabel, W*0.02, yFeed-34*s, {size:14.5*s, bold:true, color:lab, align:"left"});
-  text(ctx, P.hxLabel, (xHX0+xHX1)/2, yFeed+30*s, {size:11.5*s, color:lab});
-  text(ctx, P.valveLabel, xV, yFeed+30*s, {size:11.5*s, color:lab});
-  arrow(ctx, W-40*s, yOH, W-6*s, yOH, gL.tint, 3.5*s, 9*s);
-  text(ctx, topLabel, W*0.975, yOH+22*s, {size:14.5*s, bold:true, color:gL.tint, align:"right"});
-  arrow(ctx, W-40*s, yProd, W-6*s, yProd, gH.tint, 3.5*s, 9*s);
-  text(ctx, botLabel, W*0.975, yProd-17*s, {size:14.5*s, bold:true, color:gH.tint, align:"right"});
-  text(ctx, P.condLabel, (xC0+xC1)/2, yOH-44*s, {size:11.5*s, color:lab});
-  text(ctx, "reflux", xRf+8*s, (yOH+yRf)/2+12*s, {size:11.5*s, color:lab, align:"left"});
-  arrow(ctx, colR+44*s, yCoil, colR+6*s, yCoil, "#dc2626", 2.5*s, 7*s);
-  text(ctx, P.rebLabel, colR+50*s, yCoil, {size:11.5*s, color:"#b91c1c", align:"left"});
-  const bx = colL-14*s;                                   // section brackets
+  text(ctx, feedLabel, 14, yFeed-(20+14*kX), {size:14.5*kX, bold:true, color:lab, align:"left"});
+  text(ctx, P.hxLabel, (xHX0+xHX1)/2, yFeed+hxH/2+13*kX, {size:11.5*kX, color:lab});
+  text(ctx, P.valveLabel, xV, yFeed+Math.max(hxH/2, 1.8*vHf)+13*kX, {size:11.5*kX, color:lab});
+  arrow(ctx, W-40, yOH, W-6, yOH, gL.tint, 3.5*kP, 9*kP);
+  text(ctx, topLabel, W-18, yOH+(8+14*kX), {size:14.5*kX, bold:true, color:gL.tint, align:"right"});
+  arrow(ctx, W-40, yProd, W-6, yProd, gH.tint, 3.5*kP, 9*kP);
+  text(ctx, botLabel, W-18, yProd-(3+14*kX), {size:14.5*kX, bold:true, color:gH.tint, align:"right"});
+  text(ctx, P.condLabel, (xC0+xC1)/2, yOH-condH/2-(12+12*kX), {size:11.5*kX, color:lab});
+  text(ctx, "reflux", xRf+8, (yOH+yRf)/2+12*kX, {size:11.5*kX, color:lab, align:"left"});
+  arrow(ctx, colR+44, yCoil, colR+6, yCoil, "#dc2626", 2.5*kP, 7*kP);
+  text(ctx, P.rebLabel, colR+50, yCoil, {size:11.5*kX, color:"#b91c1c", align:"left"});
+  const bx = colL-14;                                     // section brackets
   const bracket = (y0,y1,str) => {
-    ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 1.5*s; ctx.beginPath();
-    ctx.moveTo(bx+6*s,y0); ctx.lineTo(bx,y0); ctx.lineTo(bx,y1); ctx.lineTo(bx+6*s,y1); ctx.stroke();
-    text(ctx, str, bx-8*s, (y0+y1)/2, {size:12.5*s, bold:true, color:"#475569", align:"right"});
+    ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.moveTo(bx+6,y0); ctx.lineTo(bx,y0); ctx.lineTo(bx,y1); ctx.lineTo(bx+6,y1); ctx.stroke();
+    text(ctx, str, bx-8, (y0+y1)/2, {size:12.5*kX, bold:true, color:"#475569", align:"right"});
   };
-  bracket(yp(0)-liqD-4*s, yFeed-48*s, P.rectLabel);
-  bracket(yFeed+44*s, ySump-4*s, P.stripLabel);
+  bracket(yp(0)-liqD-4, yFeed-Math.max(30, 34*kX+14), P.rectLabel);
+  bracket(yFeed+Math.max(28, 30*kX+14), ySump-4, P.stripLabel);
   if (P.showT){                                           // coldest at the top, warmest at the sump
-    const tx = W*0.80, ty0 = yp(0), ty1 = yp(N-1), tw = 10*s;
+    const ty0 = yp(0), ty1 = yp(N-1), tw = 10*kX;
     const gr = ctx.createLinearGradient(0, ty0, 0, ty1);
     gr.addColorStop(0, "#bfdbfe"); gr.addColorStop(1, "#fca5a5");
-    ctx.fillStyle = gr; ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.2*s;
+    ctx.fillStyle = gr; ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.roundRect(tx-tw/2, ty0, tw, ty1-ty0, tw/2); ctx.fill(); ctx.stroke();
     const tL = BP_K[P.gasL], tH = BP_K[P.gasH];
     const tTop = pre.tTop || (tL ? "≈ "+tL+" K" : "cold"), tBot = pre.tBot || (tH ? "≈ "+tH+" K" : "warm");
-    text(ctx, tTop, tx+12*s, ty0+6*s, {size:13*s, bold:true, color:"#1d4ed8", align:"left"});
-    text(ctx, pre.subTop || "colder", tx+12*s, ty0+22*s, {size:11*s, color:"#64748b", align:"left"});
-    text(ctx, tBot, tx+12*s, ty1-6*s, {size:13*s, bold:true, color:"#b91c1c", align:"left"});
-    text(ctx, pre.subBot || "warmer", tx+12*s, ty1-22*s, {size:11*s, color:"#64748b", align:"left"});
-    ctx.save(); ctx.translate(tx-16*s, (ty0+ty1)/2); ctx.rotate(-Math.PI/2);
-    text(ctx, "temperature", 0, 0, {size:11.5*s, color:"#64748b"}); ctx.restore();
+    const tlx = tx + tw/2 + 7*kX;
+    text(ctx, tTop, tlx, ty0+6*kX, {size:13*kX, bold:true, color:"#1d4ed8", align:"left"});
+    text(ctx, pre.subTop || "colder", tlx, ty0+22*kX, {size:11*kX, color:"#64748b", align:"left"});
+    text(ctx, tBot, tlx, ty1-6*kX, {size:13*kX, bold:true, color:"#b91c1c", align:"left"});
+    text(ctx, pre.subBot || "warmer", tlx, ty1-22*kX, {size:11*kX, color:"#64748b", align:"left"});
+    ctx.save(); ctx.translate(tx-tw/2-11*kX, (ty0+ty1)/2); ctx.rotate(-Math.PI/2);
+    text(ctx, "temperature", 0, 0, {size:11.5*kX, color:"#64748b"}); ctx.restore();
   }
+  ctx.restore();
 }
 
 /* ---- shared bits for the syngas templates (SMR, coal gasification) ---- */
@@ -1001,6 +1322,10 @@ function drawCryo(ctx,t,P,W,H){
 // drawn in path order, so where two overlap the same one stays on top and the
 // loop closes pixel-for-pixel. Counts round up to whole groups of m.
 const SLOW_SPEEDS = [["0.25","¼× (slowest)"],["0.333","⅓×"],["0.5","½×"],["1","1×"],["2","2×"],["3","3×"]];
+// The polymer template runs gas B at half of gas A, so every entry there has to
+// stay a whole fraction when halved: 3x is left out because it would put gas B
+// at 1.5x, which does not tile the loop.
+const POLY_SPEEDS = [["0.25","¼× (slowest)"],["0.333","⅓×"],["0.5","½×"],["1","1×"],["2","2×"],["4","4×"]];
 function flowM(v){ return v < 1 ? Math.round(1/v) : 1; }
 function flowCount(n, v){ const m = flowM(v); return Math.ceil(n/m)*m; }
 function flowPhase(r, i, v, t){
@@ -1729,6 +2054,217 @@ function drawCGO(ctx,t,P,W,H){
   if (P.membLabel) text(ctx, P.membLabel, W*0.025, H-16*s, {size:14*s, align:"left", color:"#334155"});
 }
 
+/* ---- gas separation membrane drawn as a 3D slab in perspective ---- */
+/* The slab is an oblique box: its top face is a parallelogram spanned by a
+   screen-horizontal width axis and a depth axis that recedes up and to the
+   right. Molecules are placed in slab coordinates (a along the width, b the
+   depth 0=front..1=back, h the height above the top face) rather than in
+   screen coordinates, so the feed fans out along the perspective axes and the
+   far lanes draw smaller. Occlusion needs no z-buffer: anything with h <= 0
+   sits under the top plane and is painted before the box, so the box covers
+   exactly the part of it that is really hidden. */
+
+// split a label onto two balanced lines when one would overrun maxW
+function m3Wrap2(ctx,str,size,maxW){
+  ctx.font = `600 ${size}px "Segoe UI", Arial, sans-serif`;
+  if (!str) return [];
+  if (ctx.measureText(str).width <= maxW) return [str];
+  const w = str.split(" ");
+  if (w.length < 2) return [str];
+  let cut = 1, best = Infinity;
+  for (let i=1;i<w.length;i++){
+    const d = Math.abs(ctx.measureText(w.slice(0,i).join(" ")).width - ctx.measureText(w.slice(i).join(" ")).width);
+    if (d < best){ best = d; cut = i; }
+  }
+  return [w.slice(0,cut).join(" "), w.slice(cut).join(" ")];
+}
+// straight block arrow (rectangular shaft + triangular head); cols may hold
+// more than one colour, laid as equal bands along the shaft — the feed arrow
+// carries both gases, so it is drawn half in each gas tint
+function m3BlockArrow(ctx,x0,y0,x1,y1,th,cols){
+  const dx = x1-x0, dy = y1-y0, L = Math.hypot(dx,dy) || 1;
+  const ux = dx/L, uy = dy/L, nx = -uy, ny = ux;
+  const head = Math.min(L*0.45, th*1.9), hw = th*1.0, Ls = L - head;
+  const pt = (d,o) => [x0+ux*d+nx*o, y0+uy*d+ny*o];
+  const outline = [pt(0,-th/2),pt(Ls,-th/2),pt(Ls,-hw),pt(L,0),pt(Ls,hw),pt(Ls,th/2),pt(0,th/2)];
+  const shape = () => {
+    ctx.beginPath(); ctx.moveTo(outline[0][0],outline[0][1]);
+    for (const p of outline.slice(1)) ctx.lineTo(p[0],p[1]);
+    ctx.closePath();
+  };
+  for (let i=0;i<cols.length;i++){
+    ctx.save();
+    if (cols.length > 1){
+      const d0 = L*i/cols.length, d1 = L*(i+1)/cols.length, o = L + th*2;
+      const b = [pt(d0,-o),pt(d1,-o),pt(d1,o),pt(d0,o)];
+      ctx.beginPath(); ctx.moveTo(b[0][0],b[0][1]);
+      for (const p of b.slice(1)) ctx.lineTo(p[0],p[1]);
+      ctx.closePath(); ctx.clip();
+    }
+    ctx.fillStyle = cols[i]; shape(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.strokeStyle = "rgba(15,23,42,0.28)"; ctx.lineWidth = 1; shape(); ctx.stroke();
+}
+// hollow "pressure gradient" arrow: striped tail, wide body, pointed tip
+function m3PressureArrow(ctx,cx,y0,w,h,fill,edge){
+  const sw = w*0.42, y1 = y0 + h*0.17, y2 = y0 + h*0.62, y3 = y0 + h, cy = (y0+y3)/2;
+  const gl = ctx.createRadialGradient(cx, cy, w*0.18, cx, cy, Math.max(w,h)*0.62);
+  gl.addColorStop(0,"rgba(253,186,116,0.30)"); gl.addColorStop(1,"rgba(253,186,116,0)");
+  ctx.fillStyle = gl; ctx.fillRect(cx-w, y0-h*0.14, 2*w, h*1.28);
+  const pts = [[cx-sw/2,y0],[cx+sw/2,y0],[cx+sw/2,y1],[cx+w/2,y1],
+               [cx+w/2,y2],[cx,y3],[cx-w/2,y2],[cx-w/2,y1],[cx-sw/2,y1]];
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for (const p of pts.slice(1)) ctx.lineTo(p[0],p[1]);
+  ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = edge; ctx.lineWidth = 2; ctx.stroke();
+  ctx.lineWidth = 1.3;
+  for (let i=1;i<=3;i++){
+    const y = y0 + (y1-y0)*i/4;
+    ctx.beginPath(); ctx.moveTo(cx-sw/2, y); ctx.lineTo(cx+sw/2, y); ctx.stroke();
+  }
+}
+
+function drawMemb3D(ctx,t,P,W,H){
+  const k = key => P[key]/100;
+  const kW = k("slabW"), kD = k("slabD"), kT = k("slabT"), kM = k("molSize"),
+        kA = k("arrowSize"), kG = k("pgSize"), kX = k("textSize");
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  const lab = "#334155";
+  const meas = (s,size) => { ctx.font = `600 ${size}px "Segoe UI", Arial, sans-serif`; return s ? ctx.measureText(s).width : 0; };
+
+  // ---- layout, in design units (1 unit = 1 px on the default 880 x 460 canvas)
+  const SW = 350*kW;                          // slab width, along the screen-horizontal axis
+  const DD = 180*kD, DX = DD*0.80, DY = DD*0.44;   // depth axis, receding up and to the right
+  const TH = 28*kT;
+  const aw = 19*kA;                           // block-arrow body thickness
+  const hov = 14 + 17*kM;                     // how far the gas floats above the top face
+  const fs = 15*kX, fsm = 13*kX;
+  const pgW = 104*kG, pgH = 250*kG, pgX = 16;
+  const feedL = 92*kA, xF0 = pgX + 46, xF1 = xF0 + feedL;
+  const feedLines = m3Wrap2(ctx, P.feedLabel, fs, 152*kX);
+  const retLines  = m3Wrap2(ctx, P.retLabel,  fs, 152*kX);
+  const nTop = Math.max(feedLines.length, retLines.length, 1);
+  const yLab0 = P.title ? 42*kX : 10;
+  const yArr = yLab0 + nTop*17*kX + 14*kX + aw/2;        // feed / retentate centreline
+  const yBack = yArr + aw/2 + hov*1.5 + 14;              // back edge of the top face
+  const Y0 = yBack + DY, ySB = Y0 + TH;                  // front-left top corner, slab underside
+  const xMol0 = Math.max(xF1 + 10, pgX + pgW + 16);      // gas appears here, clear of the ΔP arrow
+  const X0 = Math.max(pgX + pgW + 52, xF1 + 62, xMol0 + 52);
+  const xR0 = X0 + SW + DX + 34, xR1 = xR0 + 92*kA;      // retentate arrow
+  const xPm = X0 + (SW+DX)/2, yPm0 = ySB + 12, yPm1 = yPm0 + 118*kA;
+  const yMolEnd = yPm1 + Math.max(44, 70*kM);            // permeate molecules fade out by here
+  const yPmLab = yPm1 + 19*kX;
+  const pgY0 = yArr + aw/2 + 14, pgY1 = pgY0 + pgH;
+  const lx0 = X0 + SW + DX*0.55, ly0 = Y0 + TH - DY*0.55;    // membrane callout, on the lower-right edge
+  const lx1 = lx0 + 30, ly1 = ly0 + 28;
+  const VW = Math.max(xR1 + 14, (xR0+xR1)/2 + meas(P.retLabel && retLines.length === 1 ? P.retLabel : (retLines[0]||""), fs)/2 + 12,
+                      lx1 + 6 + meas(P.membLabel, fsm) + 14, xPm + meas(P.permLabel, fs)/2 + 14, 440);
+  const VH = Math.max(yMolEnd + 12, yPmLab + 18*kX, pgY1 + 16, 300);
+  fitLayout(ctx, W, H, VW, VH, 880, 460);
+  W = VW; H = VH;
+
+  // ---- slab coordinates -> screen
+  const proj = (a,b,h) => [X0 + a*SW + b*DX, Y0 - b*DY - h];
+  const dsc  = b => lerp(1, 0.58, b);              // far lanes read smaller
+  const aIn = (xMol0 - X0)/SW;                     // molecules appear at the feed arrow tip
+  const aSp = 0.22;                                // by here they have fanned out to their lane
+
+  // one molecule's position; returns [x, y, scale, height above the top plane]
+  const trace = (q,u,perm) => {
+    const bT = 0.08 + 0.84*rnd(q+1);
+    const hv = hov*(0.45 + 0.95*rnd(q+2));
+    const bAt = a => bT*smooth((a-aIn)/(aSp-aIn));
+    if (!perm){                                    // swept across the face and off to the right
+      const a = lerp(aIn, (xR1 + 34 - X0 - bT*DX)/SW, u), b = bAt(a);
+      const p = proj(a,b,hv);
+      return [p[0], p[1], dsc(b), hv];
+    }
+    const aX = 0.16 + 0.68*rnd(q+3);               // where it enters the membrane
+    const p0 = proj(aIn,0,hv), p1 = proj(aX,bT,hv);
+    const drop = yMolEnd - p1[1] + 30*rnd(q+4);
+    const Lh = Math.hypot(p1[0]-p0[0], p1[1]-p0[1]);
+    const uH = Lh/(Lh + Math.max(drop,1));         // split the phase by screen distance, so the pace is even
+    if (u < uH){
+      const a = lerp(aIn, aX, u/uH), b = bAt(a);
+      const p = proj(a,b,hv);
+      return [p[0], p[1], dsc(b), hv];
+    }
+    const dz = (u-uH)/(1-uH)*drop;                 // straight down through the slab
+    return [p1[0], p1[1]+dz, dsc(bT), hv-dz];
+  };
+
+  // flowPhase is exactly periodic in t, so the loop closes on its own; the
+  // alpha ramp only hides the hand-over where one copy replaces another
+  const V = parseFloat(P.speed), M = flowM(V);
+  const mols = [];
+  for (let side=0; side<2; side++){
+    const gas = side ? gB : gA, n = side ? P.nB : P.nA, pp = side ? P.permB : P.permA;
+    const mul = side ? 23 : 19, off = side ? 101 : 3;
+    for (let i=0;i<flowCount(n,V);i++){
+      const q = Math.floor(i/M)*mul + off;         // seed from the mover, so every copy behaves alike
+      const u = flowPhase(rnd(q), i, V, t);
+      const r = trace(q, u, rnd(q+6)*100 < pp);
+      mols.push([r[0], r[1], r[2]*1.35*kM, TAU*rnd(q+5), gas, smooth(u/0.07)*smooth((1-u)/0.07), r[3]]);
+    }
+  }
+  const paint = below => {
+    for (const m of mols){
+      if ((m[6] <= 0) !== below) continue;
+      ctx.globalAlpha = m[5];
+      drawGasMol(ctx, m[4], m[0], m[1], m[2], m[3]);
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  // ---- pressure gradient, then the three process arrows (the gas draws over them)
+  m3PressureArrow(ctx, pgX+pgW/2, pgY0, pgW, pgH, "#eef4fb", "#64748b");
+  const pgS = Math.min(1, kG);
+  const pgLines = m3Wrap2(ctx, P.pgLabel, 13*kX*pgS, pgW*0.86);
+  text(ctx, P.dpLabel, pgX+pgW/2, pgY0+pgH*0.30, {size:25*kX*pgS, bold:true, color:P.pgColor});
+  pgLines.forEach((s,i) => text(ctx, s, pgX+pgW/2, pgY0+pgH*0.46+i*15*kX*pgS, {size:13*kX*pgS, bold:true, color:P.pgColor}));
+  m3BlockArrow(ctx, xF0, yArr, xF1, yArr, aw, [mixColor(gA.tint,"#0f172a",0.2), gB.tint]);
+  m3BlockArrow(ctx, xR0, yArr, xR1, yArr, aw, [gB.tint]);
+  m3BlockArrow(ctx, xPm, yPm0, xPm, yPm1, aw, [gA.tint]);
+
+  paint(true);                                     // gas under the top plane: the slab hides it
+
+  // ---- the slab itself
+  const cT0 = mixColor(P.slabColor,"#ffffff",0.74), cT1 = mixColor(P.slabColor,"#ffffff",0.02);
+  const poly = pts => {
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    for (const p of pts.slice(1)) ctx.lineTo(p[0],p[1]);
+    ctx.closePath();
+  };
+  poly([[X0,Y0],[X0+SW,Y0],[X0+SW,Y0+TH],[X0,Y0+TH]]);
+  ctx.fillStyle = mixColor(P.slabColor,"#0f172a",0.26); ctx.fill();
+  poly([[X0+SW,Y0],[X0+SW+DX,Y0-DY],[X0+SW+DX,Y0-DY+TH],[X0+SW,Y0+TH]]);
+  ctx.fillStyle = mixColor(P.slabColor,"#0f172a",0.44); ctx.fill();
+  poly([[X0,Y0],[X0+SW,Y0],[X0+SW+DX,Y0-DY],[X0+DX,Y0-DY]]);
+  const tg = ctx.createLinearGradient(X0+DX*0.25, Y0-DY, X0+SW*0.92, Y0);
+  tg.addColorStop(0, cT0); tg.addColorStop(1, cT1);
+  ctx.fillStyle = tg; ctx.fill();
+  ctx.strokeStyle = mixColor(P.slabColor,"#0f172a",0.58); ctx.lineWidth = 1.3; ctx.stroke();
+  poly([[X0,Y0],[X0+DX,Y0-DY],[X0+SW+DX,Y0-DY],[X0+SW+DX,Y0-DY+TH],[X0+SW,Y0+TH],[X0,Y0+TH]]);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(X0+2, Y0+2.5); ctx.lineTo(X0+SW-2, Y0+2.5); ctx.stroke();
+
+  paint(false);                                    // gas above the top plane draws over the slab
+
+  // ---- labels
+  if (P.title) text(ctx, P.title, VW/2, 20*kX, {size:19*kX, bold:true, color:"#0f172a"});
+  const yL = yArr - aw/2 - 12*kX;
+  feedLines.forEach((s,i) => text(ctx, s, (xF0+xF1)/2, yL - (feedLines.length-1-i)*17*kX, {size:fs, bold:true, color:lab}));
+  retLines.forEach((s,i)  => text(ctx, s, (xR0+xR1)/2, yL - (retLines.length-1-i)*17*kX,  {size:fs, bold:true, color:mixColor(gB.tint,"#0f172a",0.2)}));
+  text(ctx, P.permLabel, xPm, yPmLab, {size:fs, bold:true, color:mixColor(gA.tint,"#0f172a",0.2)});
+  ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(lx0, ly0); ctx.lineTo(lx1, ly1); ctx.stroke();
+  text(ctx, P.membLabel, lx1+6, ly1, {size:fsm, bold:true, color:lab, align:"left"});
+  ctx.restore();
+}
+
 const TEMPLATES = {
   flow: {
     name: "Flow reactor (packed bed)",
@@ -1764,6 +2300,48 @@ const TEMPLATES = {
       {key:"retLabel",      label:"Retentate label",     type:"text",  def:"auto"},
       {key:"permLabel",     label:"Permeate label",      type:"text",  def:"auto"},
       {key:"membLabel",     label:"Membrane label",      type:"text",  def:"GO membrane"},
+    ],
+  },
+  lamellar: {
+    name: "Lamellar GO membrane — tortuous path",
+    desc: "A GO laminate drawn as what it is: flakes of length L stacked in offset rows, separated by interlayer galleries of height d, on a macroporous support. A molecule has no straight route through it — it runs along a gallery until the flake above it ends, drops through that slit, and starts again one layer down, so the path is many times the film thickness. That long path is the low permeance; the gallery height is the sieve that keeps the larger gas out, which is the high selectivity. The dashed guide is the real route of the first permeating molecule, not a decoration. Defaults show H₂/CO₂.",
+    draw: drawLamellar,
+    canvas: {w:860, h:540},
+    params: [
+      {key:"gasA",       label:"Gas A (permeating)",  type:"select", def:"H2",  options:GAS_OPTIONS},
+      {key:"gasB",       label:"Gas B (retained)",    type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"permA",      label:"Gas A permeated (%)", type:"range", min:0, max:100, step:5, def:45},
+      {key:"permB",      label:"Gas B permeated (%)", type:"range", min:0, max:100, step:5, def:0},
+      {key:"nA",         label:"Gas A molecules",     type:"range", min:4, max:30, step:1, def:14},
+      {key:"nB",         label:"Gas B molecules",     type:"range", min:2, max:20, step:1, def:9},
+      {key:"speed",      label:"Flow speed",          type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"dwell",      label:"In-membrane slowdown ×", type:"range", min:1, max:6, step:0.5, def:3},
+      {key:"molSize",    label:"Molecule size %",     type:"range", min:50, max:250, step:5, def:100},
+      {key:"goColor",    label:"GO flakes",           type:"color", def:"#b45309"},
+      {key:"supColor",   label:"Support",             type:"color", def:"#1e293b"},
+      {key:"pathColor",  label:"Path guide",          type:"color", def:"#dc2626"},
+      {key:"layers",     label:"Flake layers",        type:"range", min:3, max:9, step:1, def:5},
+      {key:"flakeLen",   label:"Flake length L %",    type:"range", min:50, max:200, step:5, def:100},
+      {key:"interlayer", label:"Interlayer d %",      type:"range", min:60, max:220, step:5, def:100},
+      {key:"flakeThick", label:"Flake thickness %",   type:"range", min:50, max:200, step:5, def:100},
+      {key:"membWidth",  label:"Membrane width %",    type:"range", min:60, max:130, step:5, def:100},
+      {key:"supSize",    label:"Support thickness %", type:"range", min:50, max:200, step:5, def:100},
+      {key:"textSize",   label:"Label size %",        type:"range", min:60, max:200, step:5, def:100},
+      {key:"showPath",   label:"Tortuous path guide", type:"checkbox", def:true},
+      {key:"showDims",   label:"L and d dimensions",  type:"checkbox", def:true},
+      {key:"showVerdict",label:"Flux/selectivity tags", type:"checkbox", def:true},
+      {key:"title",      label:"Title",               type:"text", def:""},
+      {key:"feedLabel",  label:"Feed label",          type:"text", def:"auto"},
+      {key:"retLabel",   label:"Retentate label",     type:"text", def:"auto"},
+      {key:"permLabel",  label:"Permeate label",      type:"text", def:"auto"},
+      {key:"membLabel",  label:"Laminate label",      type:"text", def:"GO laminates"},
+      {key:"supLabel",   label:"Support label",       type:"text", def:"porous support"},
+      {key:"lLabel",     label:"Flake-length symbol", type:"text", def:"L"},
+      {key:"dLabel",     label:"Interlayer symbol",   type:"text", def:"d"},
+      {key:"dpLabel",    label:"Driving-force label", type:"text", def:"ΔP"},
+      {key:"pathLabel",  label:"Path label",          type:"text", def:"[A]"},
+      {key:"fluxLabel",  label:"Flux tag",            type:"text", def:"✗ low permeance · long tortuous path"},
+      {key:"selLabel",   label:"Selectivity tag",     type:"text", def:"✓ high H₂/CO₂ selectivity"},
     ],
   },
   crumpled: {
@@ -1812,6 +2390,37 @@ const TEMPLATES = {
       {key:"membLabel", label:"Membrane label",     type:"text", def:"Crumpled GO (cGO) membrane"},
     ],
   },
+  memb3d: {
+    name: "Gas separation membrane (3D slab)",
+    desc: "The generic membrane picture, drawn as a slab in perspective: the feed enters from the left and fans out over the top face, the permeating gas drops straight through the slab into the permeate space below, and the rejected gas is swept across and off to the right as retentate. A hollow ΔP arrow on the left marks the driving force. Molecules follow the slab's own axes and shrink as they recede, and anything under the top face is hidden by the slab. Pick any gas pair and set how much of each gets through; every part has a size slider, so it can be re-proportioned for a slide. Defaults show H₂ permeating and CO₂ retained.",
+    draw: drawMemb3D,
+    canvas: {w:880, h:460},
+    params: [
+      {key:"gasA",       label:"Permeating gas",      type:"select", def:"H2",  options:GAS_OPTIONS},
+      {key:"gasB",       label:"Retained gas",        type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"permA",      label:"Gas A permeated (%)", type:"range", min:0, max:100, step:5, def:85},
+      {key:"permB",      label:"Gas B permeated (%)", type:"range", min:0, max:100, step:5, def:5},
+      {key:"nA",         label:"Gas A molecules",     type:"range", min:3, max:30, step:1, def:16},
+      {key:"nB",         label:"Gas B molecules",     type:"range", min:2, max:24, step:1, def:11},
+      {key:"speed",      label:"Flow speed",          type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"slabColor",  label:"Membrane slab",       type:"color", def:"#94a3b8"},
+      {key:"pgColor",    label:"ΔP label",            type:"color", def:"#dc2626"},
+      {key:"slabW",      label:"Slab width %",        type:"range", min:50, max:180, step:5, def:100},
+      {key:"slabD",      label:"Slab depth %",        type:"range", min:40, max:180, step:5, def:100},
+      {key:"slabT",      label:"Slab thickness %",    type:"range", min:40, max:250, step:5, def:100},
+      {key:"molSize",    label:"Molecule size %",     type:"range", min:50, max:250, step:5, def:100},
+      {key:"arrowSize",  label:"Arrow size %",        type:"range", min:50, max:200, step:5, def:100},
+      {key:"pgSize",     label:"ΔP arrow size %",     type:"range", min:50, max:180, step:5, def:100},
+      {key:"textSize",   label:"Label size %",        type:"range", min:60, max:200, step:5, def:100},
+      {key:"title",      label:"Title",               type:"text", def:""},
+      {key:"feedLabel",  label:"Feed label",          type:"text", def:"Feed Gas Stream"},
+      {key:"retLabel",   label:"Retentate label",     type:"text", def:"Retentate"},
+      {key:"permLabel",  label:"Permeate label",      type:"text", def:"Permeate"},
+      {key:"membLabel",  label:"Membrane label",      type:"text", def:"Membrane"},
+      {key:"dpLabel",    label:"ΔP label text",       type:"text", def:"ΔP"},
+      {key:"pgLabel",    label:"Pressure label",      type:"text", def:"Pressure Gradient"},
+    ],
+  },
   polymer: {
     name: "Polymeric membrane (solution–diffusion)",
     desc: "Dense polymer film with entangled chains and no size-sieving pores: both gases dissolve at the feed face, hop between free-volume elements and desorb into the permeate. Gas A diffuses faster, gas B is more soluble, so both get through — high flux, low selectivity (the Robeson trade-off). Defaults show H₂/CO₂.",
@@ -1826,7 +2435,8 @@ const TEMPLATES = {
       {key:"chains",        label:"Polymer chains",      type:"range", min:4, max:24, step:1, def:10},
       {key:"nA",            label:"Gas A molecules",     type:"range", min:4, max:30, step:1, def:14},
       {key:"nB",            label:"Gas B molecules",     type:"range", min:2, max:20, step:1, def:10},
-      {key:"speed",         label:"Flow speed",          type:"range", min:1, max:3, step:1, def:1},
+      {key:"speed",         label:"Flow speed",          type:"select", def:"0.5", options:POLY_SPEEDS},
+      {key:"molSize",       label:"Molecule size %",     type:"range", min:50, max:250, step:5, def:100},
       {key:"showVerdict",   label:"Flux/selectivity tags", type:"checkbox", def:true},
       {key:"title",         label:"Title",               type:"text",  def:""},
       {key:"feedLabel",     label:"Feed label",          type:"text",  def:"auto"},
@@ -1842,6 +2452,7 @@ const TEMPLATES = {
     name: "Pressure swing adsorption (PSA)",
     desc: "Twin-bed PSA cycle: one column adsorbs gas B at high pressure while gas A passes through as product; meanwhile the other column is blown down to low pressure, releasing gas B to the off-gas. The beds swap roles every half cycle — watch the gauges and valves switch. Defaults show H₂ purification with CO₂ adsorbed on a zeolite bed.",
     draw: drawPSA,
+    canvas: {w:800, h:450},
     params: [
       {key:"gasA",     label:"Gas A (product)",  type:"select", def:"H2",  options:GAS_OPTIONS},
       {key:"gasB",     label:"Gas B (adsorbed)", type:"select", def:"CO2", options:GAS_OPTIONS},
@@ -1849,13 +2460,20 @@ const TEMPLATES = {
       {key:"colColor", label:"Column",           type:"color", def:"#475569"},
       {key:"nA",       label:"Gas A molecules",  type:"range", min:4, max:24, step:1, def:12},
       {key:"nB",       label:"Gas B molecules",  type:"range", min:2, max:16, step:1, def:8},
-      {key:"speed",    label:"Flow speed",       type:"range", min:1, max:3, step:1, def:1},
+      {key:"speed",    label:"Flow speed",       type:"select", def:"0.333", options:SLOW_SPEEDS},
       {key:"feedLabel",label:"Feed label",       type:"text", def:"auto"},
       {key:"prodLabel",label:"Product label",    type:"text", def:"auto"},
       {key:"offLabel", label:"Off-gas label",    type:"text", def:"auto"},
       {key:"bedLabel", label:"Adsorbent label",  type:"text", def:"zeolite adsorbent"},
       {key:"hiLabel",  label:"High-P label",     type:"text", def:"high P · adsorbing"},
       {key:"loLabel",  label:"Low-P label",      type:"text", def:"low P · regenerating"},
+      {key:"colW",     label:"Column width %",   type:"range", min:50, max:200, step:5, def:100},
+      {key:"colH",     label:"Column height %",  type:"range", min:50, max:200, step:5, def:100},
+      {key:"beadSize", label:"Adsorbent bead %", type:"range", min:40, max:250, step:5, def:100},
+      {key:"molSize",  label:"Molecule size %",  type:"range", min:50, max:250, step:5, def:100},
+      {key:"gaugeSize",label:"Gauge size %",     type:"range", min:40, max:220, step:5, def:100},
+      {key:"pipeSize", label:"Pipe thickness %", type:"range", min:50, max:250, step:5, def:100},
+      {key:"textSize", label:"Label size %",     type:"range", min:60, max:200, step:5, def:100},
     ],
   },
   cryo: {
@@ -1881,6 +2499,16 @@ const TEMPLATES = {
       {key:"rebLabel",   label:"Reboiler label",       type:"text", def:"reboiler (heat in)"},
       {key:"rectLabel",  label:"Upper section label",  type:"text", def:"rectifying"},
       {key:"stripLabel", label:"Lower section label",  type:"text", def:"stripping"},
+      {key:"colW",       label:"Column width %",       type:"range", min:50, max:200, step:5, def:100},
+      {key:"colH",       label:"Column height %",      type:"range", min:50, max:200, step:5, def:100},
+      {key:"traySize",   label:"Tray size %",          type:"range", min:50, max:220, step:5, def:100},
+      {key:"molSize",    label:"Molecule size %",      type:"range", min:50, max:250, step:5, def:100},
+      {key:"condSize",   label:"Condenser size %",     type:"range", min:50, max:200, step:5, def:100},
+      {key:"rebSize",    label:"Reboiler size %",      type:"range", min:50, max:200, step:5, def:100},
+      {key:"hxSize",     label:"Heat exchanger %",     type:"range", min:50, max:200, step:5, def:100},
+      {key:"valveSize",  label:"J–T valve size %",     type:"range", min:50, max:250, step:5, def:100},
+      {key:"pipeSize",   label:"Pipe thickness %",     type:"range", min:50, max:250, step:5, def:100},
+      {key:"textSize",   label:"Label size %",         type:"range", min:60, max:200, step:5, def:100},
     ],
   },
   smr: {
