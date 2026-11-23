@@ -36,6 +36,16 @@
   #main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:10px;min-width:0}
   #canvas{border:1px solid var(--border);border-radius:8px;max-width:100%;max-height:82vh;box-shadow:0 4px 18px rgba(15,23,42,.10)}
   #hint{font-size:12px;color:var(--muted)}
+  #canvas.transp{background:repeating-conic-gradient(#e2e8f0 0 25%, #ffffff 0 50%) 0 0/16px 16px}
+  #elemList{max-height:230px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-top:6px}
+  #elemList:empty{display:none}
+  .erow{display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 6px;margin:0;cursor:default;justify-content:flex-start}
+  .erow:hover{background:#fdf2fb}
+  .erow .sw{width:10px;height:10px;border-radius:2px;flex:none;border:1px solid rgba(0,0,0,.15)}
+  .erow .lb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .erow.off .lb{color:#94a3b8;text-decoration:line-through}
+  .row2{display:flex;gap:6px}
+  .row2 button{margin:4px 0;padding:5px 6px;font-size:12px}
 </style>
 </head>
 <body>
@@ -59,8 +69,23 @@
     <label><span>Width (px)</span><input type="number" id="cw" min="200" max="1600" step="10" value="800"></label>
     <label><span>Height (px)</span><input type="number" id="ch" min="200" max="1200" step="10" value="450"></label>
     <label><span>Background</span><input type="color" id="bg" value="#ffffff"></label>
+    <label><span>Transparent background</span><input type="checkbox" id="transp"></label>
+    <div id="transpOpts" hidden>
+      <label><span>Edge matte</span><input type="color" id="matte" value="#ffffff"></label>
+      <label><span>Edge cutoff (alpha %)</span><input type="range" id="acut" min="2" max="90" step="1" value="12"><span class="val" id="acutV">12</span></label>
+      <div class="desc">A GIF pixel is either fully transparent or opaque. Pixels more see-through than the cutoff become transparent; the rest (anti-aliased edges, glows) are blended onto the matte colour &mdash; set it to your slide background. PNG frames keep the real alpha.</div>
+    </div>
     <label><span>Title</span><input type="text" id="title" placeholder="optional"></label>
     <label><span>Title color</span><input type="color" id="titleColor" value="#0f172a"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Text &amp; arrows</legend>
+    <label><span>Show text labels</span><input type="checkbox" id="showText" checked></label>
+    <label><span>Show arrows</span><input type="checkbox" id="showArrows" checked></label>
+    <div class="desc">Untick single items below to remove them. Hover an item to outline it in the preview. The list fills in as the animation plays.</div>
+    <div id="elemList"></div>
+    <div class="row2"><button id="elemAll">Show all</button><button id="elemNone">Hide all listed</button></div>
   </fieldset>
 
   <fieldset>
@@ -99,14 +124,63 @@ function mixColor(h1,h2,u){
 }
 function shade(hex,amt){ const c = hex2rgb(hex); return `rgb(${c.map(v=>clamp(v+amt,0,255)).join(",")})`; }
 
+/* ---- text & arrow visibility ----
+   Every label goes through text() and every arrow through arrow(), fatArrow(),
+   arcArrow() or the block arrows, so each one can be switched off from the
+   sidebar ("Text & arrows"). A label is identified by its string; an arrow by the
+   line of template code that draws it (read off the call stack), so one entry
+   covers, say, all the arrows a loop draws. While the preview runs (ELEM.live)
+   every element met is listed, and hovering a list entry outlines it in magenta. */
+const ELEM = {hideText:false, hideArrows:false, hidden:new Set(), seen:new Map(),
+              hl:null, live:false, mute:0, dirty:false, nArrow:0};
+const ELEM_SKIP = new Set(["elem","callSite","arrowKey","text","arrow","arrowRaw","vArrow2","fatArrow",
+                           "arcArrow","m3BlockArrow","m3PressureArrow","Error"]);
+function callSite(){
+  for (const ln of (new Error().stack || "").split("\n")){
+    const m = ln.match(/^\s*(?:at\s+(?:new\s+|async\s+)?([^\s(]+)\s+\(|at\s+|([^@\s]*)@)?.*?:(\d+):(\d+)\)?\s*$/);
+    if (!m) continue;
+    const fn = (m[1] || m[2] || "").split(".").pop();
+    if (ELEM_SKIP.has(fn)) continue;
+    return (fn || "anon") + ":" + m[3] + ":" + m[4];
+  }
+  return "arrow";
+}
+// 0 = skip it, 1 = draw it, 2 = draw it highlighted (hovered in the sidebar list)
+function elem(kind, key, label, color){
+  if (ELEM.mute && kind === "T") return 0;
+  if (ELEM.live && !ELEM.seen.has(key)){
+    ELEM.seen.set(key, {kind, label: kind === "A" ? "Arrow " + (++ELEM.nArrow) : label, color});
+    ELEM.dirty = true;
+  }
+  if ((kind === "T" ? ELEM.hideText : ELEM.hideArrows) || ELEM.hidden.has(key)) return 0;
+  return ELEM.live && ELEM.hl === key ? 2 : 1;
+}
+// would text(str) be drawn right now? (for swatches that belong to a label)
+function textVisible(str){ return !(ELEM.mute || ELEM.hideText || ELEM.hidden.has("T|" + str)); }
+function hlOn(ctx){ ctx.save(); ctx.shadowColor = "#ff00e6"; ctx.shadowBlur = 16; }
+function arrowKey(){ return "A|" + callSite(); }
+
+// o: size, bold, weight, italic, color, align, baseline, shadow (CSS colour), shadowBlur
 function text(ctx,str,x,y,o={}){
+  const size = o.size || 14;
   ctx.fillStyle = o.color || "#0f172a";
-  ctx.font = `${o.bold ? "600 " : ""}${o.size||14}px "Segoe UI", Arial, sans-serif`;
+  ctx.font = `${o.italic ? "italic " : ""}${o.weight || (o.bold ? "600" : "400")} ${size}px "Segoe UI", Arial, sans-serif`;
   ctx.textAlign = o.align || "center";
   ctx.textBaseline = o.baseline || "middle";
+  if (str === "" || str == null) return;
+  const v = elem("T", "T|" + str, String(str), o.color || "#0f172a");
+  if (!v) return;
+  if (v === 2 || o.shadow){
+    ctx.save();
+    if (o.shadow){ ctx.shadowColor = o.shadow; ctx.shadowBlur = o.shadowBlur ?? size*0.3; }
+    if (v === 2){ ctx.shadowColor = "#ff00e6"; ctx.shadowBlur = 16; ctx.fillText(str,x,y); }
+    ctx.fillText(str,x,y);
+    ctx.restore();
+    return;
+  }
   ctx.fillText(str,x,y);
 }
-function arrow(ctx,x1,y1,x2,y2,color,w=3,head=9){
+function arrowRaw(ctx,x1,y1,x2,y2,color,w,head){
   const a = Math.atan2(y2-y1, x2-x1);
   ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = "round";
   ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
@@ -115,12 +189,74 @@ function arrow(ctx,x1,y1,x2,y2,color,w=3,head=9){
   ctx.lineTo(x2-head*Math.cos(a+0.45), y2-head*Math.sin(a+0.45));
   ctx.closePath(); ctx.fill();
 }
+function arrow(ctx,x1,y1,x2,y2,color,w=3,head=9){
+  const v = elem("A", arrowKey(), "", color);
+  if (!v){ ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = "round"; return; }
+  if (v === 2) hlOn(ctx);
+  arrowRaw(ctx,x1,y1,x2,y2,color,w,head);
+  if (v === 2) ctx.restore();
+}
 function vArrow2(ctx,x,ya,yb,color,s){ // vertical double-headed arrow
+  const v = elem("A", arrowKey(), "", color);
+  if (!v) return;
+  if (v === 2) hlOn(ctx);
   if (Math.abs(ya-yb) < 14*s){ ctx.strokeStyle=color; ctx.lineWidth=2*s;
-    ctx.beginPath(); ctx.moveTo(x,ya); ctx.lineTo(x,yb); ctx.stroke(); return; }
-  const mid = (ya+yb)/2;
-  arrow(ctx,x,mid,x,ya,color,2*s,6*s);
-  arrow(ctx,x,mid,x,yb,color,2*s,6*s);
+    ctx.beginPath(); ctx.moveTo(x,ya); ctx.lineTo(x,yb); ctx.stroke(); }
+  else {
+    const mid = (ya+yb)/2;
+    arrowRaw(ctx,x,mid,x,ya,color,2*s,6*s);
+    arrowRaw(ctx,x,mid,x,yb,color,2*s,6*s);
+  }
+  if (v === 2) ctx.restore();
+}
+// thick arrow along a polyline (straight or curved), with an optional drop shadow
+function fatArrow(ctx,pts,color,w,head,shadow){
+  const v = elem("A", arrowKey(), "", color);
+  if (!v || pts.length < 2) return;
+  if (v === 2) hlOn(ctx);
+  const n = pts.length;
+  for (const [off, col] of (shadow ? [[w*0.17, shadow],[0, color]] : [[0, color]])){
+    const pp = pts.map(p => [p[0]+off, p[1]+off]);
+    const [xa,ya] = pp[n-2], [xb,yb] = pp[n-1];
+    const a = Math.atan2(yb-ya, xb-xa), px = -Math.sin(a), py = Math.cos(a);
+    // stop the shaft where the head starts so translucent colours do not double up
+    let rem = head*0.55, cut = n-1;
+    while (cut > 1 && Math.hypot(pp[cut][0]-pp[cut-1][0], pp[cut][1]-pp[cut-1][1]) < rem){
+      rem -= Math.hypot(pp[cut][0]-pp[cut-1][0], pp[cut][1]-pp[cut-1][1]); cut--;
+    }
+    const sh = pp.slice(0, cut);
+    const L = Math.hypot(pp[cut][0]-pp[cut-1][0], pp[cut][1]-pp[cut-1][1]) || 1;
+    const u = Math.max(0, 1 - rem/L);
+    sh.push([lerp(pp[cut-1][0], pp[cut][0], u), lerp(pp[cut-1][1], pp[cut][1], u)]);
+    ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = "butt"; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(sh[0][0], sh[0][1]);
+    for (const p of sh.slice(1)) ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    const bx = xb - Math.cos(a)*head*0.6, by = yb - Math.sin(a)*head*0.6;
+    ctx.fillStyle = col; ctx.beginPath();
+    ctx.moveTo(xb + Math.cos(a)*head*0.4, yb + Math.sin(a)*head*0.4);
+    ctx.lineTo(bx + px*head*0.62, by + py*head*0.62);
+    ctx.lineTo(bx - px*head*0.62, by - py*head*0.62);
+    ctx.closePath(); ctx.fill();
+  }
+  if (v === 2) ctx.restore();
+}
+// circular-arc arrow from angle a1 to a2 (clockwise), head at a2
+function arcArrow(ctx,cx,cy,R,a1,a2,color,lw,head){
+  const v = elem("A", arrowKey(), "", color);
+  if (!v) return;
+  if (v === 2) hlOn(ctx);
+  ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.arc(cx,cy,R,a1,a2); ctx.stroke();
+  const hx = cx+R*Math.cos(a2), hy = cy+R*Math.sin(a2);
+  const d = a2 + Math.PI/2;
+  const tx = hx+head*Math.cos(d), ty = hy+head*Math.sin(d);
+  const px = Math.cos(d+Math.PI/2), py = Math.sin(d+Math.PI/2);
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(tx,ty);
+  ctx.lineTo(hx+px*head*0.55, hy+py*head*0.55); ctx.lineTo(hx-px*head*0.55, hy-py*head*0.55);
+  ctx.closePath(); ctx.fill();
+  if (v === 2) ctx.restore();
 }
 
 /* ============================ GIF encoder ============================ */
@@ -142,6 +278,7 @@ function newHistogram(){
 }
 function addToHistogram(h, data){
   for (let i=0;i<data.length;i+=4){
+    if (data[i+3] === 0) continue;                // transparent pixels take no palette slot
     const r=data[i], g=data[i+1], b=data[i+2], k=bin5(r,g,b);
     h.n[k]++; h.sr[k]+=r; h.sg[k]+=g; h.sb[k]+=b;
   }
@@ -210,10 +347,11 @@ class GifEncoder{
   _b(...v){ for (const x of v) this.bytes.push(x & 255); }
   _u16(v){ this._b(v & 255, (v>>8) & 255); }
   _str(s){ for (let i=0;i<s.length;i++) this.bytes.push(s.charCodeAt(i)); }
-  addFrame(indices){
+  addFrame(indices, disposal=1){
     // disposal=1 (leave the frame in place) + a transparent index, so a frame
-    // only has to carry the pixels that actually changed
-    this._b(0x21,0xF9,4,0x05, this.delay&255, (this.delay>>8)&255, this.tIdx, 0);
+    // only has to carry the pixels that actually changed. disposal=2 clears the
+    // frame back to transparent before the next one (transparent-background GIFs)
+    this._b(0x21,0xF9,4,(disposal<<2)|1, this.delay&255, (this.delay>>8)&255, this.tIdx, 0);
     this._b(0x2C); this._u16(0); this._u16(0); this._u16(this.w); this._u16(this.h);
     this._b(0);                        // no local table: every frame shares the global one
     this._b(this.bits);                // LZW min code size
@@ -335,6 +473,7 @@ const GASES = {
 const GAS_OPTIONS = Object.keys(GASES).map(k => [k, GASES[k].label]);
 
 function drawGasMol(ctx,g,x,y,s,ang){
+  s *= MOL_MUL;
   const ca = Math.cos(ang), sa = Math.sin(ang);
   ctx.lineWidth = 1*s; ctx.strokeStyle = "#64748b";
   for (const a of g.atoms){
@@ -1829,16 +1968,7 @@ function drawCycle(ctx,t,P,W,H){
   const gap = 0.5;
   for (let i=0;i<4;i++){
     const a1 = angs[i]+gap, a2 = angs[i]+Math.PI/2-gap;
-    ctx.strokeStyle = P.arrowColor; ctx.lineWidth = 3*s;
-    ctx.beginPath(); ctx.arc(cx,cy,R,a1,a2); ctx.stroke();
-    const hx = cx+R*Math.cos(a2), hy = cy+R*Math.sin(a2);
-    const d = a2 + Math.PI/2;
-    const tx = hx+11*s*Math.cos(d), ty = hy+11*s*Math.sin(d);
-    const px = Math.cos(d+Math.PI/2), py = Math.sin(d+Math.PI/2);
-    ctx.fillStyle = P.arrowColor;
-    ctx.beginPath(); ctx.moveTo(tx,ty);
-    ctx.lineTo(hx+px*6*s, hy+py*6*s); ctx.lineTo(hx-px*6*s, hy-py*6*s);
-    ctx.closePath(); ctx.fill();
+    arcArrow(ctx, cx, cy, R, a1, a2, P.arrowColor, 3*s, 11*s);
   }
   // moving marker (drawn under the node boxes)
   const a = -Math.PI/2 + 2*Math.PI*t;
@@ -2082,6 +2212,9 @@ function m3Wrap2(ctx,str,size,maxW){
 // more than one colour, laid as equal bands along the shaft — the feed arrow
 // carries both gases, so it is drawn half in each gas tint
 function m3BlockArrow(ctx,x0,y0,x1,y1,th,cols){
+  const vis = elem("A", arrowKey(), "", cols[0]);
+  if (!vis) return;
+  if (vis === 2) hlOn(ctx);
   const dx = x1-x0, dy = y1-y0, L = Math.hypot(dx,dy) || 1;
   const ux = dx/L, uy = dy/L, nx = -uy, ny = ux;
   const head = Math.min(L*0.45, th*1.9), hw = th*1.0, Ls = L - head;
@@ -2105,9 +2238,13 @@ function m3BlockArrow(ctx,x0,y0,x1,y1,th,cols){
     ctx.restore();
   }
   ctx.strokeStyle = "rgba(15,23,42,0.28)"; ctx.lineWidth = 1; shape(); ctx.stroke();
+  if (vis === 2) ctx.restore();
 }
 // hollow "pressure gradient" arrow: striped tail, wide body, pointed tip
 function m3PressureArrow(ctx,cx,y0,w,h,fill,edge){
+  const vis = elem("A", arrowKey(), "", edge);
+  if (!vis) return;
+  if (vis === 2) hlOn(ctx);
   const sw = w*0.42, y1 = y0 + h*0.17, y2 = y0 + h*0.62, y3 = y0 + h, cy = (y0+y3)/2;
   const gl = ctx.createRadialGradient(cx, cy, w*0.18, cx, cy, Math.max(w,h)*0.62);
   gl.addColorStop(0,"rgba(253,186,116,0.30)"); gl.addColorStop(1,"rgba(253,186,116,0)");
@@ -2124,6 +2261,7 @@ function m3PressureArrow(ctx,cx,y0,w,h,fill,edge){
     const y = y0 + (y1-y0)*i/4;
     ctx.beginPath(); ctx.moveTo(cx-sw/2, y); ctx.lineTo(cx+sw/2, y); ctx.stroke();
   }
+  if (vis === 2) ctx.restore();
 }
 
 function drawMemb3D(ctx,t,P,W,H){
@@ -2265,7 +2403,1189 @@ function drawMemb3D(ctx,t,P,W,H){
   ctx.restore();
 }
 
+/* GO/chitosan laminate, cross-section. 3-4 rows of GO flakes in brick order;
+   each flake is a patchwork of oxidized domains (orange, carrying grafted
+   chitosan chains) and bare graphitic domains (grey). Gas A (H2O) drops in
+   from the feed, runs along each gallery hopping from one chitosan tip to the
+   next (a short stop at each: sorption), slides quickly over the graphitic
+   patches, falls through the slit where a flake ends and repeats one row down.
+   Gas B (CO2) barely sorbs: it touches the top brush and is turned back. */
+function drawGOCSLayers(ctx,t,P,W,H){
+  const kk = k => P[k]/100;
+  const kL = kk("flakeLen"), kD = kk("interlayer"), kM = kk("molSize"), kX = kk("textSize"),
+        kC = kk("chainLen");
+  const gA = GASES[P.gasA], gB = GASES[P.gasB];
+  const v = parseFloat(P.speed), m = flowM(v);
+  const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
+  const permLabel = P.permLabel === "auto" ? gA.label+" permeate" : P.permLabel;
+  const oxLabel = P.oxLabel === "auto" ? "oxidized GO + chitosan: sorbs "+gA.label : P.oxLabel;
+  const rejLabel = P.rejLabel === "auto" ? gB.label+" barely sorbs" : P.rejLabel;
+
+  /* ---- layout (design units; 1 unit = 1 px at 860 wide) ---- */
+  const nL = P.layers, ft = 10, g = 50*kD;
+  const bl = Math.min(0.36*g, 20)*kC;                 // chitosan chain length
+  const mX0 = 74, mX1 = 786, VW = 860;
+  const yT = P.title ? 34*kX : 0;
+  const zF0 = yT + 8, zF1 = zF0 + 92;
+  const yM = zF1 + bl + 12;
+  const rowY = r => yM + r*(ft+g);
+  const yLast = rowY(nL-1) + ft;
+  const yS = yLast + bl + 14, sH = P.showSupport ? 16 : 0;
+  const zP0 = yS + sH + 10, zP1 = zP0 + 58;
+  const yLeg = zP1 + 22*kX;
+  const VH = yLeg + 16*kX;
+  fitLayout(ctx, W, H, VW, VH, 860, 480);
+
+  /* ---- flakes: slits in brick order, each flake split into domains ---- */
+  const slitW = 16, pitch = 170*kL + slitW;
+  const slits = [], domains = [];                     // domains[r] = [{a,b,ox}]
+  for (let r=0;r<nL;r++){
+    const a = [];
+    for (let j=-1;j<40;j++){
+      const x = mX0 + (j + 0.5 + 0.5*(r%2) + 0.16*(rnd(r*31+j*7+5)-0.5))*pitch;
+      if (x > mX1 - 0.22*pitch) break;
+      if (x > mX0 + 0.22*pitch) a.push(x);
+    }
+    if (!a.length) a.push((mX0+mX1)/2);
+    slits.push(a);
+    const edges = [mX0];
+    for (const x of a) edges.push(x-slitW/2, x+slitW/2);
+    edges.push(mX1);
+    const ds = [];
+    for (let k=0;k<edges.length;k+=2){
+      const fa = edges[k], fb = edges[k+1];
+      if (fb - fa < 4) continue;
+      let x = fa, n = 0, anyOx = false;
+      while (x < fb - 1){
+        let len = 30 + 46*rnd(r*97 + k*13 + n*7 + 1);
+        if (fb - (x+len) < 22) len = fb - x;
+        let ox = rnd(r*53 + k*29 + n*11 + 3)*100 < P.oxFrac;
+        if (x + len >= fb - 1 && !anyOx && P.oxFrac > 0) ox = true;   // every flake keeps some chitosan
+        ds.push({a:x, b:x+len, ox, first:n===0, last:x+len>=fb-1});
+        anyOx = anyOx || ox; x += len; n++;
+      }
+    }
+    domains.push(ds);
+  }
+  // chitosan chains on both faces of every oxidized domain
+  const chains = [];                                   // {x, y0, dir, len, ph, r}
+  for (let r=0;r<nL;r++){
+    for (const d of domains[r]){
+      if (!d.ox) continue;
+      const len = d.b - d.a, n = Math.max(1, Math.round(len/(46/P.density)));
+      for (const dir of [-1, 1]){
+        for (let k=0;k<n;k++){
+          const sd = Math.round(d.a*7) + k*17 + (dir > 0 ? 5 : 0) + r*301;
+          const x = d.a + (k+0.5)*len/n + (rnd(sd)-0.5)*len/n*0.4;
+          chains.push({x, y0: dir < 0 ? rowY(r) : rowY(r)+ft, dir, r,
+                       len: bl*(0.78 + 0.34*rnd(sd+1)), ph: rnd(sd+2)*TAU, f: 1 + Math.floor(rnd(sd+3)*2)});
+        }
+      }
+    }
+  }
+  const tip = c => {
+    const sway = 2.2*Math.sin(TAU*c.f*t + c.ph);
+    return [c.x + sway, c.y0 + c.dir*c.len];
+  };
+  // where a molecule sits when it is held by chain c
+  const spot = c => [c.x, c.y0 + c.dir*(c.len + 6*kM)];
+  // level L = the gap above row L+1 (L=-1: the feed face, L=nL-1: under the last row)
+  const levelChains = L => chains.filter(c => (c.r === L && c.dir > 0) || (c.r === L+1 && c.dir < 0));
+  const levelY = L => L < 0 ? rowY(0) - bl - 8*kM : L >= nL-1 ? (yLast + yS)/2 : (rowY(L)+ft + rowY(L+1))/2;
+  const nSup = 5, supX = [], spw = 34;
+  for (let i=0;i<nSup;i++) supX.push(mX0 + (mX1-mX0)*(i+0.5)/nSup);
+
+  /* ---- route of permeating molecule q: nodes with dwell times ---- */
+  const DW = 10*P.dwell;
+  const route = q => {
+    let x = mX0 + 40 + rnd(q)*(mX1 - mX0 - 80);
+    const nodes = [{x, y: zF0 + 24 + rnd(q+1)*36, dw:0, fast:true}];
+    for (let L=-1; L<nL; L++){
+      let tx;
+      if (L < nL-1){
+        const s = slits[L+1];
+        const lefts = s.filter(z => z < x), rights = s.filter(z => z >= x);
+        const cands = [];
+        if (lefts.length) cands.push(Math.max(...lefts));
+        if (rights.length) cands.push(Math.min(...rights));
+        tx = cands[Math.floor(rnd(q*3+L*7+11)*cands.length)];
+      } else {
+        tx = supX.reduce((b,z) => Math.abs(z-x) < Math.abs(b-x) ? z : b, supX[0]);
+      }
+      const yc = levelY(L);
+      const lo = Math.min(x, tx), hi = Math.max(x, tx);
+      const sites = levelChains(L).filter(c => c.x > lo + 4 && c.x < hi - 4)
+                                  .sort((a,b) => (tx >= x ? a.x - b.x : b.x - a.x));
+      // the molecule hops between chitosan tips, but not every tip catches it
+      let first = true;
+      for (const c of sites){
+        if (!first && rnd(q*13 + Math.round(c.x) + L*5) < 0.35) continue;
+        const [sx, sy] = spot(c);
+        nodes.push({x:sx, y:sy, dw:DW*(0.6 + 0.8*rnd(q + c.x)), site:c, fast:L < 0 && first});
+        first = false;
+      }
+      nodes.push({x:tx, y:yc, dw:0});
+      if (L < nL-1){
+        nodes.push({x:tx, y:rowY(L+1) - 3, dw:0});
+        nodes.push({x:tx, y:rowY(L+1) + ft + 3, dw:0});
+      } else {
+        nodes.push({x:tx, y:zP0 + 34, dw:0, exit:true});
+      }
+      x = tx;
+    }
+    // timeline: travel at 1 unit/px (feed approach twice as fast) + dwell
+    let T = 0;
+    const seg = [];
+    for (let i=0;i<nodes.length;i++){
+      if (i){
+        const a = nodes[i-1], b = nodes[i];
+        const d = Math.hypot(b.x-a.x, b.y-a.y), dt = d*(b.fast || i === 1 ? 0.5 : 1);
+        seg.push({a, b, t0:T, t1:T+dt}); T += dt;
+      }
+      if (nodes[i].dw){ seg.push({a:nodes[i], b:nodes[i], t0:T, t1:T+nodes[i].dw, hold:nodes[i].site}); T += nodes[i].dw; }
+    }
+    return {nodes, seg, T};
+  };
+  const where = (rt, u) => {
+    const tau = u*rt.T;
+    let s = rt.seg[rt.seg.length-1];
+    for (const z of rt.seg) if (tau <= z.t1){ s = z; break; }
+    const w = s.t1 > s.t0 ? clamp((tau - s.t0)/(s.t1 - s.t0), 0, 1) : 1;
+    return {x: lerp(s.a.x, s.b.x, w), y: lerp(s.a.y, s.b.y, w), hold: s.hold};
+  };
+
+  /* ---- zones ---- */
+  if (P.showZones){
+    ctx.fillStyle = "rgba(219,234,254,0.75)";
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(mX0-20, zF0, mX1-mX0+40, zF1-zF0, 10) : ctx.rect(mX0-20, zF0, mX1-mX0+40, zF1-zF0); ctx.fill();
+    ctx.fillStyle = "rgba(220,252,231,0.8)";
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(mX0-20, zP0, mX1-mX0+40, zP1-zP0, 10) : ctx.rect(mX0-20, zP0, mX1-mX0+40, zP1-zP0); ctx.fill();
+  }
+  text(ctx, feedLabel, mX0-8, zF0 + 15*kX, {size:15*kX, bold:true, color:"#1e3a8a", align:"left"});
+  text(ctx, permLabel, mX0-8, zP1 - 14*kX, {size:15*kX, bold:true, color:"#15803d", align:"left"});
+  text(ctx, rejLabel, mX1+8, zF1 - 13*kX, {size:13*kX, bold:true, color:gB.tint, align:"right"});
+  // molecule key, top right of the feed
+  if (P.showKey){
+    const kx = mX1 - 150, ky = zF0 + 16*kX;
+    drawGasMol(ctx, gA, kx, ky, kM*0.95, 0);
+    text(ctx, gA.label, kx + 14*kM, ky, {size:13*kX, color:"#0f172a", align:"left"});
+    drawGasMol(ctx, gB, kx + 80, ky, kM*0.95, 0);
+    text(ctx, gB.label, kx + 80 + 18*kM, ky, {size:13*kX, color:"#0f172a", align:"left"});
+  }
+  if (P.title) text(ctx, P.title, VW/2, 18*kX, {size:18*kX, bold:true, color:"#0f172a"});
+
+  /* ---- tortuous path guide (route of the first molecule) ---- */
+  if (P.showPath){
+    const rt = route(11);
+    ctx.save(); ctx.setLineDash([6,5]); ctx.globalAlpha = 0.75;
+    strokePath(ctx, rt.nodes.slice(1).map(n => [n.x, n.y]), P.pathColor, 1.8);
+    ctx.restore();
+  }
+
+  /* ---- laminate ---- */
+  for (let r=0;r<nL;r++){
+    const y = rowY(r);
+    for (const d of domains[r]){
+      const a = d.a + (d.first ? 0 : -0.5), b = d.b;
+      ctx.fillStyle = d.ox ? shade(P.oxColor, ((r + Math.round(d.a)) % 3)*8 - 6) : P.grColor;
+      ctx.beginPath();
+      const rr = 3;
+      if (ctx.roundRect) ctx.roundRect(a, y, b-a, ft, [d.first ? rr : 0, d.last ? rr : 0, d.last ? rr : 0, d.first ? rr : 0]);
+      else ctx.rect(a, y, b-a, ft);
+      ctx.fill();
+      if (!d.ox) zigLine(ctx, a+3, b-3, y + ft/2, ft*0.22, Math.max(2, Math.round((b-a)/5)), "rgba(226,232,240,0.55)", 1);
+    }
+  }
+  // support
+  if (P.showSupport){
+    const e = [mX0];
+    for (const x of supX) e.push(x-spw/2, x+spw/2);
+    e.push(mX1);
+    ctx.fillStyle = P.supColor;
+    for (let k=0;k<e.length;k+=2){
+      if (e[k+1] - e[k] < 1) continue;
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(e[k], yS, e[k+1]-e[k], sH, 3) : ctx.rect(e[k], yS, e[k+1]-e[k], sH); ctx.fill();
+    }
+    text(ctx, P.supLabel, mX1 + 8, yS + sH/2, {size:12*kX, color:"#475569", align:"left"});
+  }
+  // chitosan chains: wavy strands grown out of the oxidized patches
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const c of chains){
+    const [tx, ty] = tip(c);
+    ctx.strokeStyle = P.csColor; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(c.x, c.y0);
+    const N = 10;
+    for (let i=1;i<=N;i++){
+      const s = i/N;
+      const wig = 3.2*Math.sin(s*TAU*1.25 + c.ph)*Math.sin(Math.PI*s*0.95);
+      ctx.lineTo(lerp(c.x, tx, s) + wig, c.y0 + c.dir*c.len*s);
+    }
+    ctx.stroke();
+    ctx.fillStyle = P.csTip;
+    ctx.beginPath(); ctx.arc(tx, ty, 3, 0, TAU); ctx.fill();
+  }
+
+  /* ---- ambient feed ---- */
+  for (let i=0;i<P.feedMols;i++){
+    const gg = i % 3 === 2 ? gA : gB;
+    const bx = mX0 + 30 + rnd(i*7+301)*(mX1 - mX0 - 60), by = zF0 + 34 + rnd(i*7+302)*(zF1 - zF0 - 50);
+    const ph = rnd(i*7+303)*TAU;
+    drawGasMol(ctx, gg, bx + 7*Math.sin(TAU*t + ph), by + 4*Math.cos(TAU*2*t + ph), kM, ph + TAU*t*(i%2 ? 1 : -1));
+  }
+
+  /* ---- gas B: comes down, touches the outer brush, turned back ---- */
+  for (let i=0;i<P.nB;i++){
+    const q = i*9 + 501;
+    const u = (rnd(q) + t) % 1;
+    const x0 = mX0 + 50 + rnd(q+1)*(mX1 - mX0 - 100), dx = (rnd(q+2) - 0.5)*120;
+    const yc = rowY(0) - bl - 7*kM, y0 = zF0 + 30;
+    let x, y, al = 1;
+    if (u < 0.42){ const w = smooth(u/0.42); x = x0 + dx*0.3*w; y = lerp(y0, yc, w); al = clamp(u/0.08, 0, 1); }
+    else if (u < 0.54){ const w = (u - 0.42)/0.12; x = x0 + dx*0.3 + 2*Math.sin(w*TAU*2); y = yc - 2*Math.abs(Math.sin(w*TAU*1.5)); }
+    else { const w = (u - 0.54)/0.46; x = x0 + dx*(0.3 + 0.7*smooth(w)); y = lerp(yc, y0 - 6, smooth(w)); al = 1 - w*w; }
+    ctx.globalAlpha = al;
+    drawGasMol(ctx, gB, x, y, kM, rnd(q+3)*TAU + TAU*t);
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---- gas A: permeates ---- */
+  const routes = new Map();
+  for (let i=0;i<flowCount(P.nA, v);i++){
+    const q = Math.floor(i/m)*5 + 11;
+    if (!routes.has(q)) routes.set(q, route(q));
+    const rt = routes.get(q);
+    const u = flowPhase(rnd(q+4), i, v, t);
+    const p = where(rt, u);
+    const al = Math.min(1, u/0.03, (1-u)/0.05);
+    ctx.globalAlpha = clamp(al, 0, 1);
+    if (p.hold && P.showHB){                           // hydrogen bond to the chitosan tip
+      const [hx, hy] = tip(p.hold);
+      ctx.save(); ctx.setLineDash([2,3]); ctx.strokeStyle = gA.tint; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.restore();
+    }
+    const jig = p.hold ? 1.2*Math.sin(TAU*6*t + q) : 0;
+    drawGasMol(ctx, gA, p.x + jig, p.y, kM, rnd(q+5)*TAU + TAU*(p.hold ? 1 : 2)*t);
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---- driving force + laminate bracket + legend ---- */
+  arrow(ctx, 36, zF1 - 4, 36, yS + sH, "#0284c7", 3, 10);
+  {
+    ctx.save(); ctx.translate(22, (zF1 + yS)/2); ctx.rotate(-Math.PI/2);
+    text(ctx, P.dpLabel, 0, 0, {size:14*kX, bold:true, color:"#0284c7"});
+    ctx.restore();
+  }
+  if (P.membLabel && textVisible(P.membLabel)){
+    const bx = mX1 + 12, b0 = rowY(0), b1 = yLast;
+    ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(bx-5, b0); ctx.lineTo(bx, b0); ctx.lineTo(bx, b1); ctx.lineTo(bx-5, b1); ctx.stroke();
+    ctx.save(); ctx.translate(bx + 14*kX, (b0+b1)/2); ctx.rotate(Math.PI/2);
+    text(ctx, P.membLabel, 0, 0, {size:14*kX, bold:true, color:"#334155"});
+    ctx.restore();
+  }
+  {
+    ctx.font = `400 ${13*kX}px "Segoe UI", Arial, sans-serif`;
+    const w1 = ctx.measureText(oxLabel).width, w2 = ctx.measureText(P.grLabel).width;
+    const tot = 26 + w1 + 40 + 26 + w2;
+    let x = VW/2 - tot/2;
+    const sw = (col, ox) => {
+      ctx.fillStyle = col; ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x, yLeg-4, 20, 8, 2) : ctx.rect(x, yLeg-4, 20, 8); ctx.fill();
+      if (ox){
+        ctx.strokeStyle = P.csColor; ctx.lineWidth = 2.2;
+        for (const dx of [5, 14]){ ctx.beginPath(); ctx.moveTo(x+dx, yLeg-4); ctx.quadraticCurveTo(x+dx+3, yLeg-9, x+dx, yLeg-13); ctx.stroke(); }
+      }
+    };
+    if (oxLabel && textVisible(oxLabel)){ sw(P.oxColor, true); text(ctx, oxLabel, x + 26, yLeg, {size:13*kX, color:"#334155", align:"left"}); x += 26 + w1 + 40; }
+    if (P.grLabel && textVisible(P.grLabel)){ sw(P.grColor, false); text(ctx, P.grLabel, x + 26, yLeg, {size:13*kX, color:"#334155", align:"left"}); }
+  }
+  ctx.restore();
+}
+
+/* ============ shared helpers for the ported templates ============ */
+// small seeded PRNG (mulberry32) so a template's random layout is fixed
+function prng(seed){
+  let a = (seed >>> 0) || 1;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const uni = (r,a,b) => a + (b-a)*r();
+function plen(pts){ let L = 0; for (let i=1;i<pts.length;i++) L += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); return L; }
+// point + heading at arc length d along a 2D polyline
+function pointDir(pts, d){
+  for (let i=0;i<pts.length-1;i++){
+    const [xa,ya] = pts[i], [xb,yb] = pts[i+1], l = Math.hypot(xb-xa, yb-ya);
+    if (d <= l || i === pts.length-2){
+      const u = l === 0 ? 0 : clamp(d/l, 0, 1);
+      return [xa+(xb-xa)*u, ya+(yb-ya)*u, Math.atan2(yb-ya, xb-xa)];
+    }
+    d -= l;
+  }
+  const p = pts[pts.length-1]; return [p[0], p[1], 0];
+}
+function starPath(ctx,x,y,r){
+  ctx.beginPath();
+  for (let i=0;i<10;i++){
+    const rr = i%2 ? r*0.45 : r, a = -Math.PI/2 + i*Math.PI/5;
+    i ? ctx.lineTo(x+rr*Math.cos(a), y+rr*Math.sin(a)) : ctx.moveTo(x+rr*Math.cos(a), y+rr*Math.sin(a));
+  }
+  ctx.closePath();
+}
+function dashedLine(ctx,x0,y0,x1,y1,col,w,dash,gap){
+  ctx.save(); ctx.setLineDash([dash,gap]); ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = "butt";
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke(); ctx.restore();
+}
+// rotated label (vertical axis titles etc.)
+function rtext(ctx,str,x,y,ang,o){ ctx.save(); ctx.translate(x,y); ctx.rotate(ang); text(ctx,str,0,0,o); ctx.restore(); }
+// flat 2D molecules in the style of the PIL scripts (gifkit.py)
+function molH2(ctx,x,y,r,ang){
+  const dx = 0.75*r*Math.cos(ang), dy = 0.75*r*Math.sin(ang);
+  ctx.lineWidth = 1; ctx.strokeStyle = "#3468a0"; ctx.fillStyle = "#7eb2e4";
+  for (const s of [-1,1]){ ctx.beginPath(); ctx.arc(x+s*dx, y+s*dy, r, 0, TAU); ctx.fill(); ctx.stroke(); }
+}
+function molCO2(ctx,x,y,r,ang){
+  const dx = 1.45*r*Math.cos(ang), dy = 1.45*r*Math.sin(ang);
+  ctx.lineWidth = 1; ctx.strokeStyle = "#781414"; ctx.fillStyle = "#d63027";
+  for (const s of [-1,1]){ ctx.beginPath(); ctx.arc(x+s*dx, y+s*dy, r*0.95, 0, TAU); ctx.fill(); ctx.stroke(); }
+  ctx.strokeStyle = "#000"; ctx.fillStyle = "#282828";
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
+}
+const PAL = {GO_C:"#c46220", GO_D:"#964614", NAVY:"#002d72", GREEN:"#388e3c", GREY:"#6e6e6e", TXT:"#1e1e1e",
+             H2_O:"#3468a0"};
+
+/* ============ GO/chitosan composite, pseudo-3D (H2O through chitosan channels) ============ */
+/* Orthographic camera, depth-sorted shaded-sphere atoms. A graphene-oxide sheet
+   (hydrophobic basal plane, honeycomb) carries parallel chitosan chains drawn
+   as space-filling CPK atoms with a cyan glow. Between neighbouring chains run
+   hydrophilic channels (translucent blue slabs): H2O enters a channel mouth and
+   travels along it; CO2 reaches the mouth, rattles and is turned away. */
+const CPK = {C:[150,150,152], O:[222,32,28], N:[40,60,210], H:[244,244,244]};
+const CPK_R = {C:1.28, O:1.16, N:1.18, H:0.88};
+const G3 = {sprites:new Map(), chains:null, chainKey:"", stat:null, statKey:""};
+function sphereSprite(rpx, rgb){
+  const r2 = Math.max(1, Math.round(rpx*4)/2);          // radius in half-pixels, rendered at 2x
+  const key = r2 + "|" + rgb;
+  let s = G3.sprites.get(key);
+  if (s) return s;
+  const r = r2, n = Math.ceil(r)*2 + 3, c = (n-1)/2;
+  const cv = document.createElement("canvas"); cv.width = cv.height = n;
+  const x = cv.getContext("2d"), im = x.createImageData(n, n), d = im.data;
+  let L = [-0.45,-0.55,0.70]; const ln = Math.hypot(...L); L = L.map(v => v/ln);
+  let Hh = [L[0], L[1], L[2]+1]; const hn = Math.hypot(...Hh); Hh = Hh.map(v => v/hn);
+  for (let j=0;j<n;j++) for (let i=0;i<n;i++){
+    const dx = (i-c)/r, dy = (j-c)/r, rr = dx*dx + dy*dy;
+    const nz = Math.sqrt(Math.max(0, 1-rr));
+    const diff = clamp(dx*L[0] + dy*L[1] + nz*L[2], 0, 1);
+    const spec = Math.pow(clamp(dx*Hh[0] + dy*Hh[1] + nz*Hh[2], 0, 1), 38);
+    const rim = 0.78 + 0.22*nz, k = (j*n + i)*4;
+    for (let ch=0; ch<3; ch++) d[k+ch] = clamp((rgb[ch]*(0.30 + 0.78*diff) + 255*0.55*spec)*rim, 0, 255);
+    d[k+3] = 255*clamp(r - Math.sqrt(rr)*r + 0.5, 0, 1);
+  }
+  x.putImageData(im, 0, 0);
+  s = {cv, half: c/2, size: n/2};
+  G3.sprites.set(key, s);
+  return s;
+}
+function chitosanChain(y0, seed, X0, X1, zc){
+  const r = prng(seed*7919 + 13), atoms = [];
+  const unit = 5.15, x0 = X0 + 0.5, n = Math.floor((X1 - X0 - 1)/unit);
+  for (let i=0;i<n;i++){
+    const xc = x0 + unit*(i+0.5), th = Math.PI*i + 0.25*Math.sin(i*1.3 + seed);
+    const loc = [], ring = [];
+    for (let k=0;k<6;k++){
+      const a = k*Math.PI/3 + 0.4, p = [1.45*Math.cos(a), 1.35*Math.sin(a), 0.35*Math.sin(2*a)];
+      ring.push([p, a]); loc.push([k === 0 ? "O" : "C", p]);
+    }
+    loc.push(["O", [unit/2, 0.15, -0.35]]);                       // glycosidic O
+    const sub = (k, up) => { const [[px,py,pz], a] = ring[k]; return [px + 1.45*Math.cos(a)*0.7, py + 1.45*Math.sin(a), pz + up]; };
+    const n2 = sub(2, 0.9); loc.push(["N", n2]);                   // amine on C2
+    loc.push(["H", [n2[0]+0.5, n2[1]+0.6, n2[2]+0.6]]);
+    loc.push(["H", [n2[0]-0.4, n2[1]+0.8, n2[2]-0.3]]);
+    const o3 = sub(3, -0.7); loc.push(["O", o3]);                  // OH on C3
+    loc.push(["H", [o3[0]-0.6, o3[1]-0.3, o3[2]-0.7]]);
+    const c6 = sub(5, 0.7); loc.push(["C", c6]);                   // CH2OH on C5
+    const o6 = [c6[0]+0.9, c6[1]-0.9, c6[2]+0.8]; loc.push(["O", o6]);
+    loc.push(["H", [o6[0]+0.7, o6[1]-0.4, o6[2]+0.5]]);
+    for (const k of [1,2,3,4,5]){                                  // ring H
+      const [[px,py,pz], a] = ring[k], s = (k+i)%2 ? 1 : -1;
+      loc.push(["H", [px + 0.45*Math.cos(a), py + 0.55*Math.sin(a), pz + s]]);
+    }
+    if (r() < 0.35){                                               // a few acetyl groups
+      loc.push(["C", [n2[0]+0.2, n2[1]+1.4, n2[2]+0.2]]);
+      loc.push(["O", [n2[0]+1.2, n2[1]+1.8, n2[2]+0.3]]);
+    }
+    for (const [el, [lx,ly,lz]] of loc){
+      const ry = ly*Math.cos(th) - lz*Math.sin(th), rz = ly*Math.sin(th) + lz*Math.cos(th);
+      atoms.push([el, xc + lx, y0 + ry, zc + rz*0.8]);
+    }
+  }
+  return atoms;
+}
+function drawGOCS3D(ctx,t,P,W,H){
+  const T = 90, f = t*T;
+  const PHI = P.yaw*Math.PI/180, PSI = P.pitch*Math.PI/180;
+  const cP = Math.cos(PHI), sP = Math.sin(PHI), cS = Math.cos(PSI), sS = Math.sin(PSI);
+  const nC = P.chains, SP = 13;
+  const CHAINS_Y = [], CHAN_Y = [];
+  for (let i=0;i<nC;i++) CHAINS_Y.push((i - (nC-1)/2)*SP);
+  for (let i=0;i<nC-1;i++) CHAN_Y.push((CHAINS_Y[i] + CHAINS_Y[i+1])/2);
+  const SX = [-30, 30], SY = [CHAINS_Y[0] - 14, CHAINS_Y[nC-1] + 8];
+  const ZC = 3.1, BOX_HW = 3.0, BZ = [0.3, 6.0];
+  const MOUTH_X = SX[0] - 1.5;
+  // camera fit: bounding box of the sheet slab and the arrow tails at unit scale
+  const p0 = (x,y,z) => { const xp = x*cP - y*sP, yp = x*sP + y*cP; return [xp, -(yp*cS + z*sS), yp*sS - z*cS]; };
+  let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9;
+  const fit = (x,y,z) => { const [a,b] = p0(x,y,z); bx0 = Math.min(bx0,a); bx1 = Math.max(bx1,a); by0 = Math.min(by0,b); by1 = Math.max(by1,b); };
+  for (const x of SX) for (const y of SY) for (const z of [0, 8]) fit(x,y,z);
+  for (const z of [12.5, -4]) for (const c of CHAN_Y) fit(MOUTH_X - 22, c + 4, z);
+  const SC = 9.4*Math.min(W/860, H/600)*P.zoom/100;          // 9.4 px/Å at the original 860 x 600
+  const OX = W/2 - (bx0+bx1)/2*SC, OY = H/2 - (by0+by1)/2*SC - 4*SC/9.4;
+  const proj = (x,y,z) => { const [a,b,d] = p0(x,y,z); return [a*SC + OX, b*SC + OY, d]; };
+  const kS = SC/9.4;                                             // 1 at the original 860 x 600 render
+
+  /* ---- chains (cached) ---- */
+  const ck = nC + "|" + SX + "|" + SY;
+  if (G3.chainKey !== ck){
+    G3.chains = [];
+    CHAINS_Y.forEach((yc, j) => { G3.chains.push(...chitosanChain(yc, j*7 + 3, SX[0], SX[1], ZC)); });
+    G3.chainKey = ck;
+  }
+  const ATOMS = G3.chains;
+
+  /* ---- static layers (cached): sheet + honeycomb, then glow + channels ---- */
+  const sk = [W,H,P.yaw,P.pitch,P.zoom,nC,P.sheetColor,P.glowColor,P.chanColor,P.chanAlpha,P.showHoney,P.showGlow,P.showChan,P.atomScale].join("|");
+  if (G3.statKey !== sk){
+    const mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return c; };
+    const base = mk(), mid = mk();
+    let x = base.getContext("2d");
+    const poly = (cx, pts, fill) => { cx.fillStyle = fill; cx.beginPath(); pts.forEach((p,i) => i ? cx.lineTo(p[0],p[1]) : cx.moveTo(p[0],p[1])); cx.closePath(); cx.fill(); };
+    poly(x, [proj(SX[0],SY[0],0), proj(SX[1],SY[0],0), proj(SX[1],SY[1],0), proj(SX[0],SY[1],0)], P.sheetColor);
+    if (P.showHoney){
+      const inS = (a,b) => a >= SX[0] && a <= SX[1] && b >= SY[0] && b <= SY[1];
+      x.strokeStyle = "rgba(150,118,80,0.78)"; x.lineWidth = 1.3*kS; x.beginPath();
+      const dots = [];
+      for (let i=-40;i<=40;i++) for (let j=-20;j<=20;j++){
+        const ax = i*2.46 + j*1.23, ay = j*2.13;
+        if (inS(ax, ay)) dots.push([ax, ay]);
+        if (inS(ax+1.23, ay+0.71)) dots.push([ax+1.23, ay+0.71]);
+        if (!inS(ax, ay)) continue;
+        for (const [dx,dy] of [[1.23,0.71],[-1.23,0.71],[0,-1.42]]){
+          if (!inS(ax+dx, ay+dy)) continue;
+          const A = proj(ax, ay, 0), B = proj(ax+dx, ay+dy, 0);
+          x.moveTo(A[0], A[1]); x.lineTo(B[0], B[1]);
+        }
+      }
+      x.stroke();
+      x.fillStyle = "rgba(128,98,64,0.9)";
+      for (const [a,b] of dots){ const p = proj(a,b,0); x.beginPath(); x.arc(p[0], p[1], 1.6*kS, 0, TAU); x.fill(); }
+    }
+    // sheet edge (thickness)
+    const e0 = proj(SX[0],SY[0],0), e1 = proj(SX[1],SY[0],0), f0 = proj(SX[0],SY[0],-1.2), f1 = proj(SX[1],SY[0],-1.2);
+    poly(x, [e0,e1,f1,f0], shade(P.sheetColor, -56));
+    const e2 = proj(SX[0],SY[1],0), f2 = proj(SX[0],SY[1],-1.2);
+    poly(x, [e0,e2,f2,f0], shade(P.sheetColor, -36));
+    // cyan glow under the chains
+    x = mid.getContext("2d");
+    if (P.showGlow){
+      const g = document.createElement("canvas"); g.width = W; g.height = H;
+      const gx = g.getContext("2d");
+      const blur = 9*kS;
+      if ("filter" in gx) gx.filter = `blur(${blur}px)`;
+      gx.fillStyle = "#fff";
+      for (const [el,ax,ay,az] of ATOMS){
+        const p = proj(ax,ay,az), rr = CPK_R[el]*SC*P.atomScale/100 + 6*kS;
+        gx.beginPath(); gx.arc(p[0], p[1], rr, 0, TAU); gx.fill();
+      }
+      gx.filter = "none";
+      gx.globalCompositeOperation = "source-in";
+      gx.fillStyle = P.glowColor; gx.fillRect(0,0,W,H);
+      x.globalAlpha = 0.75; x.drawImage(g, 0, 0); x.globalAlpha = 1;
+    }
+    if (P.showChan){
+      const cc = hex2rgb(P.chanColor), rgba = (k,a) => `rgba(${cc.map(v => clamp(Math.round(v+k),0,255)).join(",")},${a})`;
+      for (const c of CHAN_Y){
+        const y0 = c - BOX_HW, y1 = c + BOX_HW, [z0, z1] = BZ, xa = SX[0]+0.3, xb = SX[1]-0.3;
+        const faces = [[[xa,y0,z0],[xb,y0,z0],[xb,y0,z1],[xa,y0,z1]],
+                       [[xa,y0,z1],[xb,y0,z1],[xb,y1,z1],[xa,y1,z1]],
+                       [[xa,y0,z0],[xa,y1,z0],[xa,y1,z1],[xa,y0,z1]]];
+        const op = P.chanAlpha/100, fills = [rgba(0,op), rgba(30,op), rgba(-20,op)];
+        faces.forEach((fc,i) => poly(x, fc.map(p => proj(...p)), fills[i]));
+        x.strokeStyle = rgba(90, Math.min(1, op*1.2)); x.lineWidth = 1.2*kS;
+        for (const [a,b] of [[[xa,y0,z1],[xb,y0,z1]], [[xa,y1,z1],[xb,y1,z1]], [[xa,y0,z0],[xa,y0,z1]], [[xa,y1,z1],[xa,y0,z1]]]){
+          const A = proj(...a), B = proj(...b);
+          x.beginPath(); x.moveTo(A[0],A[1]); x.lineTo(B[0],B[1]); x.stroke();
+        }
+      }
+    }
+    G3.stat = {base, mid}; G3.statKey = sk;
+  }
+  ctx.drawImage(G3.stat.base, 0, 0);
+  const ax0 = proj(0,0,0), ax1 = proj(10,0,0), ang = Math.atan2(ax1[1]-ax0[1], ax1[0]-ax0[0]);
+  {
+    const p = proj(4, SY[0] + 4.5, 0);
+    rtext(ctx, P.phobLabel, p[0], p[1], ang, {size:30*kS, italic:true, weight:"300", color:"rgba(70,50,30,0.92)",
+          shadow:"rgba(255,255,255,0.9)", shadowBlur:3*kS});
+  }
+  ctx.drawImage(G3.stat.mid, 0, 0);
+
+  /* ---- red: CO2 bounced away from the lowest channel mouth ---- */
+  if (CHAN_Y.length){
+    const c = CHAN_Y[0], pts = [];
+    for (let i=0;i<20;i++){ const q = i/19; pts.push(proj(MOUTH_X - 5 - 17*smooth(q), c + 1.5*q, 9 + 2.5*Math.sin(Math.PI*q) - 6*q*q)); }
+    fatArrow(ctx, pts, P.rejColor, 15*kS, 34*kS, shade(P.rejColor, -86));
+  }
+
+  /* ---- atoms: chains + molecules, painted back to front ---- */
+  const items = [];
+  const aS = P.atomScale/100, mS = P.molScale/100;
+  for (const [el,x,y,z] of ATOMS){ const p = proj(x,y,z); items.push([p[2], p[0], p[1], CPK_R[el]*SC*aS, CPK[el], 1]); }
+  const add = (el,x,y,z,k,al) => { if (al <= 0.02) return; const p = proj(x,y,z); items.push([p[2]-0.01, p[0], p[1], CPK_R[el]*k*SC, CPK[el], al]); };
+  const water = (x,y,z,a1,a2,al) => {
+    const k = 1.4*mS;
+    add("O", x,y,z,k,al);
+    for (const s of [-1,1]){
+      const a = a1 + s*52*Math.PI/180;
+      add("H", x + Math.cos(a)*0.96*k, y + Math.sin(a)*0.96*Math.cos(a2)*k, z + Math.sin(a)*0.96*Math.sin(a2)*k, k, al);
+    }
+  };
+  const co2 = (x,y,z,a1,a2,al) => {
+    const k = 1.3*mS, ux = Math.cos(a1)*Math.cos(a2), uy = Math.sin(a1)*Math.cos(a2), uz = Math.sin(a2), d = 1.16*k;
+    add("C", x,y,z,k,al); add("O", x+ux*d, y+uy*d, z+uz*d, k, al); add("O", x-ux*d, y-uy*d, z-uz*d, k, al);
+  };
+  const along = (pts, d) => {
+    for (let i=0;i<pts.length-1;i++){
+      const a = pts[i], b = pts[i+1], l = Math.hypot(b[0]-a[0], b[1]-a[1], b[2]-a[2]);
+      if (d <= l || i === pts.length-2){ const u = l ? clamp(d/l,0,1) : 0; return [0,1,2].map(j => lerp(a[j], b[j], u)); }
+      d -= l;
+    }
+    return pts[pts.length-1];
+  };
+  const WV = 0.72*P.speed, CV = 0.55*P.speed;
+  const waterAt = (c, age, ph) => {
+    const dy = 4*Math.sin(ph*3.1);
+    const pts = [[MOUTH_X-15, c+dy, 10.5], [MOUTH_X, c, 3.0], [SX[1]+7, c, 3.0]];
+    const L = Math.hypot(15, dy, 7.5) + (SX[1]+7-MOUTH_X), d = age*WV;
+    if (d > L) return false;
+    let [x,y,z] = along(pts, d);
+    if (x > MOUTH_X){ y += 1.3*Math.sin(0.23*age + ph); z += 0.6*Math.sin(0.31*age + 2*ph); }
+    water(x, y, z, 0.11*age + ph, 0.07*age + ph, Math.min(1, age/8, (L-d)/6));
+    return true;
+  };
+  const co2At = (c, age, ph) => {
+    const dy = 3*Math.sin(ph*2.3), a = [MOUTH_X-16, c+dy, 12.5], m = [MOUTH_X-1.8, c+0.5*dy, 6.2];
+    const tin = Math.hypot(m[0]-a[0], m[1]-a[1], m[2]-a[2])/CV, rattle = 10/P.speed;
+    let x, y, z, al = 1;
+    if (age < tin){ [x,y,z] = along([a,m], age*CV); al = Math.min(1, age/8); }
+    else if (age < tin + rattle){ const q = (age - tin)*P.speed; [x,y,z] = m; x -= 0.35*Math.abs(Math.sin(q*1.2)); z += 0.25*Math.sin(q*1.9); }
+    else {
+      const q = (age - tin - rattle)*P.speed/40;
+      if (q > 1) return false;
+      x = m[0] - 13*smooth(q); y = m[1] - 9*q; z = m[2] - 9*q*q + 2.5*Math.sin(Math.PI*q); al = 1 - Math.pow(q, 1.5);
+    }
+    co2(x, y, z, 0.05*age + ph, 0.3*Math.sin(0.04*age + ph), al);
+    return true;
+  };
+  CHAN_Y.forEach((c, ci) => {
+    const r = prng(40 + ci);
+    for (let k=0;k<P.nWater;k++){
+      const st = k*T/P.nWater + ci*T/(2*P.nWater), ph = uni(r, 0, 6.28), base = ((f - st) % T + T) % T;
+      for (let mm=0; mm<12 && waterAt(c, base + mm*T, ph); mm++);
+    }
+    for (let k=0;k<P.nCO2;k++){
+      const st = k*T/P.nCO2 + 20 + ci*22, ph = uni(r, 0, 6.28), base = ((f - st) % T + T) % T;
+      for (let mm=0; mm<12 && co2At(c, base + mm*T, ph); mm++);
+    }
+  });
+  items.sort((a,b) => b[0] - a[0]);
+  for (const [, X, Y, rr, col, al] of items){
+    const s = sphereSprite(rr, col);
+    ctx.globalAlpha = al;
+    ctx.drawImage(s.cv, X - s.half, Y - s.half, s.size, s.size);
+  }
+  ctx.globalAlpha = 1;
+
+  /* ---- overlay: hydrophilic label + blue inlet arrow ---- */
+  if (CHAN_Y.length){
+    const p = proj(6, CHAN_Y[0], BZ[1] + 5.5);
+    rtext(ctx, P.philLabel, p[0], p[1], ang, {size:32*kS, italic:true, weight:"300", color:"rgba(255,255,255,0.98)",
+          shadow:"rgba(10,60,120,0.9)", shadowBlur:4*kS});
+    const c = CHAN_Y[CHAN_Y.length-1];
+    const a = proj(MOUTH_X-24, c+3, 13), b = proj(MOUTH_X-8, c+1, 7.5), pts = [];
+    for (let i=0;i<12;i++) pts.push([lerp(a[0],b[0],i/11), lerp(a[1],b[1],i/11)]);
+    fatArrow(ctx, pts, rgbaHex(P.inColor, 0.65), 15*kS, 34*kS, "rgba(30,90,150,0.24)");
+  }
+}
+
+/* text with PIL-style anchors: "la" left-top, "ma" centre-top, "ra" right-top */
+function ptext(ctx,str,x,y,size,color,bold,anchor){
+  const al = {l:"left", m:"center", r:"right"}[(anchor||"la")[0]];
+  text(ctx, str, x, y, {size, color, bold, align:al, baseline:"top"});
+}
+function rrect(ctx,x0,y0,x1,y1,fill,rad,stroke,lw){
+  ctx.beginPath();
+  if (rad && ctx.roundRect) ctx.roundRect(x0, y0, x1-x0, y1-y0, rad); else ctx.rect(x0, y0, x1-x0, y1-y0);
+  if (fill){ ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = lw || 1; ctx.stroke(); }
+}
+function dot(ctx,x,y,r,fill,stroke,lw){
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+  if (fill){ ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = lw || 1; ctx.stroke(); }
+}
+function rgbaHex(hex,a){ const c = hex2rgb(hex); return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+// generic "rides a polyline, may be turned back at node failIdx" mover (frames as time unit)
+function pathMover(pts, failIdx, age, v, pause, fadeIn, fadeOut){
+  if (failIdx == null){
+    const L = plen(pts), d = age*v;
+    if (d > L) return null;
+    const [x,y,a] = pointDir(pts, d);
+    return [x, y, a, Math.min(1, age/fadeIn, (L-d)/fadeOut)];
+  }
+  const sub = pts.slice(0, failIdx+1), Lf = plen(sub), tf = Lf/v;
+  if (age <= tf){ const [x,y,a] = pointDir(sub, age*v); return [x, y, a, Math.min(1, age/fadeIn)]; }
+  if (age <= tf + pause){
+    const [x,y] = sub[sub.length-1], k = age - tf;
+    return [x + 1.5*Math.sin(k*1.9), y - 1.1*Math.abs(Math.sin(k*1.3)), 0.4*Math.sin(k), 1];
+  }
+  const back = (age - tf - pause)*v;
+  if (back > Lf) return null;
+  const [x,y,a] = pointDir(sub.slice().reverse(), back);
+  return [x, y, a, clamp((Lf - back)/fadeOut, 0, 1)];
+}
+function brickRows(x0, x1, ytop, nrows, dy, fl, gap, rowOff, pores, pw){
+  const pitch = fl + gap, rows = [];
+  for (let r=0;r<nrows;r++){
+    const y = ytop + r*dy, off = rowOff + (r%2)*pitch/2;
+    const flakes = [], slits = [];
+    for (let x = x0 - off; x < x1; x += pitch){
+      let segs = [[Math.max(x, x0), Math.min(x + fl, x1)]];
+      for (const pc of pores){
+        const nw = [];
+        for (const [sa,sb] of segs){
+          if (sb <= pc - pw/2 || sa >= pc + pw/2) nw.push([sa,sb]);
+          else {
+            if (pc - pw/2 - sa > 2) nw.push([sa, pc - pw/2]);
+            if (sb - (pc + pw/2) > 2) nw.push([pc + pw/2, sb]);
+          }
+        }
+        segs = nw;
+      }
+      flakes.push(...segs.filter(s => s[1] - s[0] > 2));
+      const sc = x + fl + gap/2;
+      if (x0 + 6 < sc && sc < x1 - 6) slits.push(sc);
+    }
+    rows.push({y, flakes, slits});
+  }
+  return rows;
+}
+// tortuous route down a brick laminate: along each gallery to the nearer slit on a random side
+function brickRoute(rows, xs, ys, r, galleryDy, th, exitY){
+  const pts = [[xs, ys]];
+  let x = xs;
+  for (const row of rows){
+    const gy = row.y - (galleryDy - th)/2;
+    pts.push([x, gy]);
+    const lefts = row.slits.filter(s => s < x - 1), rights = row.slits.filter(s => s > x + 1);
+    const c = [];
+    if (lefts.length) c.push(Math.max(...lefts));
+    if (rights.length) c.push(Math.min(...rights));
+    const s = c[Math.floor(r()*c.length)];
+    pts.push([s, gy]); x = s;
+  }
+  const last = rows[rows.length-1];
+  pts.push([x, last.y + th + (galleryDy - th)/2], [x, exitY]);
+  return pts;
+}
+// permeance-selectivity axes shared by the three map templates
+function psAxes(ctx, ox, oy, xend, ytop, xl, yl, size, col){
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineCap = "butt";
+  ctx.beginPath(); ctx.moveTo(ox, ytop + 6); ctx.lineTo(ox, oy); ctx.lineTo(xend - 6, oy); ctx.stroke();
+  arrow(ctx, ox, oy, ox, ytop, col, 2, 9);
+  arrow(ctx, ox, oy, xend, oy, col, 2, 9);
+  ptext(ctx, xl, (ox + xend)/2, oy + 9, size, PAL.TXT, false, "ma");
+  rtext(ctx, yl, ox - 18, (oy + ytop)/2, -Math.PI/2, {size, color:PAL.TXT});
+}
+
+/* ============ pathway engineering: coupled vs decoupled (3 panels) ============ */
+function drawPathwayEng(ctx,t,P,W,H){
+  const T = 100, f = t*T, SPAWN = 2;
+  const FL = 104, GAP = 12, TH = 9, DY = 23, PT = FL + GAP, NR = P.rows;
+  const YTOP = 186, FEED = [128, 166], FILM_BOT = YTOP + (NR-1)*DY + TH, SUP_Y = FILM_BOT + 6;
+  const PERM_TOP = SUP_Y + 18, PERM_BOT = SUP_Y + 76, EXIT_Y = PERM_TOP + 34, PW = 10;
+  const VW = P.showMap ? 1240 : 850, VH = Math.max(560, PERM_BOT + (P.showBars ? 98 : 40));
+  fitLayout(ctx, W, H, VW, VH, 1240, 560);
+  const V = {H2: 3.2*P.speed, CO2: 2.0*P.speed};
+  const LX0 = 40, LX1 = 400, RX0 = 460, RX1 = 820;
+  const PORES = []; for (let i=0;i<P.pores;i++) PORES.push(RX0 + 45 + i*(RX1 - RX0 - 90)/Math.max(1, P.pores-1));
+  const key = NR + "|" + P.pores;
+  if (!drawPathwayEng.c || drawPathwayEng.k !== key){
+    const rowsL = brickRows(LX0, LX1, YTOP, NR, DY, FL, GAP, 34, [], PW);
+    const rowsR = brickRows(RX0, RX1, YTOP, NR, DY, FL, GAP, 34, PORES, PW);
+    const specs = (seed, x0, x1, kind) => {
+      const r = prng(seed), out = [];
+      for (let k=0;k<T/SPAWN;k++){
+        const gas = k%2 ? "CO2" : "H2";
+        let xs = uni(r, x0+15, x1-15); const ys = uni(r, ...FEED);
+        const u = []; for (let i=0;i<NR;i++) u.push(r());
+        let pts, fail = null;
+        if (kind === "L"){
+          pts = brickRoute(rowsL, xs, ys, r, DY, TH, EXIT_Y);
+          const p = gas === "H2" ? 0.90 : 0.52;
+          for (let i=0;i<NR;i++) if (u[i] > p){ fail = 2 + 2*i; break; }
+        } else {
+          const xc = PORES[(Math.floor(k/2) + (k%2)*2) % PORES.length];
+          xs = clamp(xc + uni(r, -55, 55), x0+15, x1-15);
+          pts = [[xs, ys], [xc, YTOP - 9], [xc, FILM_BOT + 6], [xc, EXIT_Y]];
+          fail = u[0] < (gas === "H2" ? 0.96 : 0.04) ? null : 1;
+        }
+        out.push([k, gas, pts, fail]);
+      }
+      return out;
+    };
+    const guide = brickRoute(rowsL, LX0 + 120, 150, prng(5), DY, TH, EXIT_Y);
+    const film = guide.slice(1, -1);
+    drawPathwayEng.c = {rowsL, rowsR, specL: specs(11, LX0, LX1, "L"), specR: specs(12, RX0, RX1, "R"),
+                        guide, tau: plen(film)/(film[film.length-1][1] - film[0][1])};
+    drawPathwayEng.k = key;
+  }
+  const C = drawPathwayEng.c;
+  const mol = (gas,x,y,a,al) => { if (al <= 0.01) return; ctx.globalAlpha = al; gas === "H2" ? molH2(ctx,x,y,3.7,a) : molCO2(ctx,x,y,3.4,a); ctx.globalAlpha = 1; };
+  const panel = (x0, x1, title, sub, tcol) => {
+    ptext(ctx, title, (x0+x1)/2, 50, 20, tcol, true, "ma");
+    ptext(ctx, sub, (x0+x1)/2, 76, 14.5, PAL.GREY, false, "ma");
+    rrect(ctx, x0-10, 104, x1+10, YTOP-14, P.showZones ? "#e8f1fb" : null, 6);
+    ptext(ctx, P.feedLabel, x0-3, 106, 13, PAL.NAVY, true, "la");
+    rrect(ctx, x0-10, PERM_TOP, x1+10, PERM_BOT, P.showZones ? "#eaf6ea" : null, 6);
+    ptext(ctx, P.permLabel, x0-3, PERM_BOT-19, 13, PAL.GREEN, true, "la");
+    for (let k=0;k<7;k++){ const a = x0 + k*(x1-x0)/7 + 5; rrect(ctx, a, SUP_Y, a + (x1-x0)/7 - 12, SUP_Y + 10, "#464e5e"); }
+  };
+  const flakes = rows => { for (const row of rows) for (const [a,b] of row.flakes) rrect(ctx, a, row.y, b, row.y + TH, P.goColor, 0, P.goEdge, 1); };
+  const ambient = (x0, x1, seed) => {
+    const r = prng(seed);
+    for (let j=0;j<10;j++){
+      let bx = uni(r, x0+150, x1-10), by = uni(r, 126, 166); const ph = uni(r, 0, 6.28);
+      bx += 5*Math.sin(TAU*t*2 + ph); by += 3*Math.cos(TAU*t*3 + ph);
+      j%2 ? molCO2(ctx, bx, by, 3.4, ph + TAU*t) : molH2(ctx, bx, by, 3.7, ph + TAU*t*2);
+    }
+  };
+  const movers = specs => {
+    for (const [k, gas, pts, fail] of specs){
+      const base = ((f - k*SPAWN) % T + T) % T;
+      for (let m=0;m<4;m++){
+        const s = pathMover(pts, fail, base + m*T, V[gas], 10/P.speed, 8, 30);
+        if (!s) continue;
+        const [x,y,a,al] = s, inside = y > YTOP - 12 && y < FILM_BOT + 4;
+        mol(gas, x, y, inside ? a : a + 0.15*(base + m*T), al);
+      }
+    }
+  };
+  const bars = (x0, x1, perm, sel, pq, sq) => {
+    if (!P.showBars) return;
+    const y = PERM_BOT + 18;
+    [[P.permBar, perm, PAL.H2_O, pq], [P.selBar, sel, PAL.GREEN, sq]].forEach(([lab, frac, col, q], i) => {
+      const yy = y + i*26, bx0 = x0 + 150, bx1 = x1 - 46;
+      ptext(ctx, lab, x0, yy - 1, 14, PAL.TXT, false, "la");
+      rrect(ctx, bx0, yy, bx1, yy + 14, "#ececec", 7);
+      rrect(ctx, bx0, yy, bx0 + (bx1-bx0)*frac, yy + 14, col, 7);
+      ptext(ctx, q, bx1 + 6, yy - 1, 14, col, true, "la");
+    });
+  };
+
+  if (P.title) ptext(ctx, P.title, VW/2, 10, 21, PAL.NAVY, true, "ma");
+  // left: conventional
+  panel(LX0, LX1, P.leftTitle, P.leftSub, P.goEdge);
+  if (P.showGuide) for (let i=0;i<C.guide.length-1;i++)
+    dashedLine(ctx, ...C.guide[i], ...C.guide[i+1], "rgba(0,45,114,0.43)", 1.5, 5, 4);
+  flakes(C.rowsL); ambient(LX0, LX1, 21); movers(C.specL);
+  ptext(ctx, "path ≈ " + C.tau.toFixed(1) + " × thickness", LX1 + 3, PERM_BOT - 19, 13, PAL.NAVY, false, "ra");
+  bars(LX0, LX1, 0.30, 0.72, "low", "high");
+  // right: engineered
+  panel(RX0, RX1, P.rightTitle, P.rightSub, PAL.GREEN);
+  for (const pc of PORES) rrect(ctx, pc - PW/2 - 3, YTOP - 4, pc + PW/2 + 3, FILM_BOT + 4, "#cde4fa");
+  flakes(C.rowsR);
+  for (const pc of PORES){
+    rrect(ctx, pc - PW/2 - 2, YTOP - 2, pc - PW/2, YTOP + TH, PAL.GREEN);
+    rrect(ctx, pc + PW/2, YTOP - 2, pc + PW/2 + 2, YTOP + TH, PAL.GREEN);
+  }
+  ambient(RX0, RX1, 22); movers(C.specR);
+  ptext(ctx, "path ≈ thickness", RX1 + 3, PERM_BOT - 19, 13, PAL.NAVY, false, "ra");
+  bars(RX0, RX1, 0.90, 0.86, "high", "high");
+  ctx.strokeStyle = "#d2d2d2"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(430, 46); ctx.lineTo(430, VH - 40);
+  if (P.showMap){ ctx.moveTo(850, 46); ctx.lineTo(850, VH - 40); }
+  ctx.stroke();
+
+  if (P.showMap){
+    const X0 = 900, X1 = 1205, Y0 = 118, Y1 = 430;
+    ptext(ctx, P.mapTitle, (X0+X1)/2, 50, 20, PAL.NAVY, true, "ma");
+    ptext(ctx, P.mapSub, (X0+X1)/2, 76, 14.5, PAL.GREY, false, "ma");
+    ctx.strokeStyle = PAL.TXT; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X0, Y0); ctx.lineTo(X0, Y1); ctx.lineTo(X1, Y1); ctx.stroke();
+    arrow(ctx, X0, Y1, X0, Y0 - 6, PAL.TXT, 2, 9);
+    arrow(ctx, X0, Y1, X1 + 6, Y1, PAL.TXT, 2, 9);
+    ptext(ctx, P.xAxis, (X0+X1)/2, Y1 + 10, 15, PAL.TXT, false, "ma");
+    rtext(ctx, P.yAxis, X0 - 16, (Y0+Y1)/2, -Math.PI/2, {size:15, color:PAL.TXT});
+    const ub = x => 176 + 0.80*(x - X0), conv = x => ub(x) + 36;
+    dashedLine(ctx, X0+8, ub(X0+8), X1-14, ub(X1-14), "#787878", 2, 9, 6);
+    ptext(ctx, "trade-off", X1 - 14, ub(X1-14) + 6, 13, PAL.GREY, false, "ra");
+    const r = prng(3);
+    for (let i=0;i<14;i++){ const cx = uni(r, X0+30, X0+210), cy = conv(cx) + uni(r, -12, 12); dot(ctx, cx, cy, 4.2, rgbaHex(P.goColor,0.6), rgbaHex(P.goEdge,0.6)); }
+    const ph = 0.5 - 0.5*Math.cos(TAU*t), xa = X0 + 34, xb = X0 + 206, cx = xa + (xb - xa)*ph;
+    dot(ctx, cx, conv(cx), 7, P.goColor, P.goEdge, 2);
+    ptext(ctx, "thicker", xa - 6, conv(xa) - 30, 13, P.goEdge, false, "la");
+    ptext(ctx, "thinner", xb + 10, conv(xb) - 4, 13, P.goEdge, false, "la");
+    const sx = X1 - 46, sy = Y0 + 56, pulse = 1 + 0.12*Math.sin(TAU*2*t);
+    dot(ctx, sx, sy, 17*pulse, "rgba(56,142,60,0.18)");
+    starPath(ctx, sx, sy, 12); ctx.fillStyle = PAL.GREEN; ctx.fill(); ctx.strokeStyle = "#1e5a23"; ctx.lineWidth = 1; ctx.stroke();
+    const c0 = [X0 + 130, conv(X0 + 130) - 10];
+    dashedLine(ctx, c0[0], c0[1], sx - 16, sy + 12, PAL.GREEN, 2, 8, 5);
+    arrow(ctx, sx - 30, sy + 23, sx - 15, sy + 12, PAL.GREEN, 2, 10);
+    ptext(ctx, P.engLabel1, X0 + 120, Y0 + 70, 14, PAL.GREEN, true, "ma");
+    ptext(ctx, P.engLabel2, X0 + 120, Y0 + 87, 14, PAL.GREEN, true, "ma");
+    const ly = Y1 + 40;
+    dot(ctx, X0 + 8, ly + 8, 5, P.goColor, P.goEdge, 1);
+    ptext(ctx, P.legConv, X0 + 20, ly, 13.5, PAL.TXT, false, "la");
+    starPath(ctx, X0 + 8, ly + 34, 7); ctx.fillStyle = PAL.GREEN; ctx.fill(); ctx.strokeStyle = "#1e5a23"; ctx.stroke();
+    ptext(ctx, P.legEng, X0 + 20, ly + 26, 13.5, PAL.TXT, false, "la");
+  }
+  if (P.footer) ptext(ctx, P.footer, 430, VH - 28, 15, PAL.GREY, false, "ma");
+  ctx.restore();
+}
+
+/* ============ P-S map with hand-drawn flat vs crumpled insets (title slide) ============ */
+function drawCrumpledMap(ctx,t,P,W,H){
+  const T = 90, f = t*T, VW = 600, VH = 510;
+  fitLayout(ctx, W, H, VW, VH, 600, 510);
+  const OX = 52, OY = 468, LINE = [[70,95],[585,445]];
+  const ub = x => LINE[0][1] + (LINE[1][1]-LINE[0][1])*(x - LINE[0][0])/(LINE[1][0]-LINE[0][0]);
+  const mol = (gas,x,y,a,al,r=3.4) => { if (al <= 0.01) return; ctx.globalAlpha = al; gas === "H2" ? molH2(ctx,x,y,r,a) : molCO2(ctx,x,y,r*0.92,a); ctx.globalAlpha = 1; };
+  // flat inset geometry
+  const FX0 = 78, FX1 = 262, FY = 318, NR = 5, DYF = 17, THF = 6, FLF = 46, GAPF = 9;
+  const F_BOT = FY + (NR-1)*DYF + THF, F_EXIT = F_BOT + 18;
+  // crumpled inset geometry
+  const CX0 = 345, CX1 = 580, BANDS = [80,140,200], TIER = [110,170], PWc = 66, PHc = 30,
+        POCK = [[386,462,538],[424,500]], C_EXIT = 226;
+  if (!drawCrumpledMap.c){
+    const rows = brickRows(FX0, FX1, FY, NR, DYF, FLF, GAPF, 20, [], 0);
+    const r = prng(7), fs = [];
+    for (let k=0;k<12;k++){
+      const gas = k%2 ? "CO2" : "H2", xs = uni(r, FX0+12, FX1-12);
+      const pts = brickRoute(rows, xs, FY - 22, r, DYF, THF, F_EXIT);
+      const u = []; for (let i=0;i<NR;i++) u.push(r());
+      const p = gas === "H2" ? 0.88 : 0.45; let fail = null;
+      for (let i=0;i<NR;i++) if (u[i] > p){ fail = 2 + 2*i; break; }
+      fs.push([k*T/12, gas, pts, fail]);
+    }
+    const r2 = prng(21), cs = [];
+    for (let k=0;k<12;k++) cs.push([k*T/12, k%2 ? "CO2" : "H2", POCK[0][Math.floor(k/2)%3], POCK[1][Math.floor(k/2)%2], uni(r2,0,6.28), uni(r2,-20,20)]);
+    drawCrumpledMap.c = {rows, fs, cs};
+  }
+  const C = drawCrumpledMap.c;
+  // map
+  psAxes(ctx, OX, OY, VW - 4, 8, P.xAxis, P.yAxis, 17, PAL.NAVY);
+  dashedLine(ctx, ...LINE[0], ...LINE[1], "#7d7d7d", 2, 9, 6);
+  ptext(ctx, "trade-off", LINE[1][0], LINE[1][1] - 70, 14, PAL.GREY, false, "ra");
+  { const r = prng(3); for (let i=0;i<9;i++){ const cx = uni(r, 390, 520); dot(ctx, cx, ub(cx) + 26 + uni(r,-10,10), 4, rgbaHex(PAL.GO_C,0.43), rgbaHex(PAL.GO_D,0.43)); } }
+  const a0 = [250,296], a1 = [350,236];
+  dashedLine(ctx, ...a0, ...a1, PAL.GREEN, 2.5, 8, 5);
+  arrow(ctx, a1[0]-14, a1[1]+8.4, a1[0], a1[1], PAL.GREEN, 2.5, 11);
+  { const q = (t*2) % 1; dot(ctx, lerp(a0[0],a1[0],q), lerp(a0[1],a1[1],q), 4, `rgba(56,142,60,${0.78*Math.sin(Math.PI*q)})`); }
+  ptext(ctx, P.armLabel1, 282, 304, 14, PAL.GREEN, true, "la");
+  ptext(ctx, P.armLabel2, 282, 320, 14, PAL.GREEN, true, "la");
+  // flat inset
+  for (const row of C.rows) for (const [a,b] of row.flakes) rrect(ctx, a, row.y, b, row.y + THF, PAL.GO_C, 0, PAL.GO_D, 1);
+  const VF = {H2: 1.15*P.speed, CO2: 0.8*P.speed};
+  for (const [st, gas, pts, fail] of C.fs){
+    const base = ((f - st) % T + T) % T;
+    for (let m=0;m<6;m++){ const s = pathMover(pts, fail, base + m*T, VF[gas], 12/P.speed, 8, 14); if (s) mol(gas, ...s); }
+  }
+  ptext(ctx, P.flatLabel, (FX0+FX1)/2, F_EXIT - 2, 17, PAL.GO_D, true, "ma");
+  ptext(ctx, P.flatSub, (FX0+FX1)/2, F_EXIT + 17, 14, PAL.GREY, false, "ma");
+  // crumpled inset
+  ctx.lineCap = "round";
+  BANDS.forEach((yb, b) => {
+    for (let j=0;j<3;j++){
+      ctx.strokeStyle = j === 1 ? PAL.GO_D : PAL.GO_C; ctx.lineWidth = 1.6; ctx.beginPath();
+      for (let x = CX0; x <= CX1; x += 4){ const y = yb - 4 + j*4 + 3*Math.sin(x*0.07 + b*1.7); x === CX0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); }
+      ctx.stroke();
+    }
+  });
+  TIER.forEach((yc, ti) => { for (const cx of POCK[ti]){
+    ctx.beginPath(); ctx.ellipse(cx, yc, PWc/2, PHc/2, 0, 0, TAU); ctx.fillStyle = "#d6e9fa"; ctx.fill();
+    ctx.strokeStyle = PAL.GO_C; ctx.lineWidth = 2.5; ctx.stroke(); } });
+  const cpos = (gas, age, p0, p1, ph, dx) => {
+    const segs = gas === "H2" ? [["in",12],["d0",12],["hop",9],["d1",12],["out",12]] : [["in",14],["d0",34],["back",16]];
+    let acc = 0;
+    for (const [kind, d0] of segs){
+      const d = d0/P.speed;
+      if (age < acc + d){
+        const q = (age - acc)/d, w = (age - acc)*P.speed;
+        if (kind === "in") return [lerp(p0+dx, p0, q), lerp(TIER[0]-52, TIER[0], smooth(q)), age*0.3, Math.min(1, age*P.speed/6)];
+        if (kind === "d0"){
+          const x = p0 + 0.33*PWc*Math.sin(0.35*w + ph);
+          const y = gas === "CO2" ? TIER[0] + 0.3*PHc*Math.abs(Math.sin(0.3*w + ph)) : TIER[0] + 0.25*PHc*Math.sin(0.5*w + 2*ph);
+          return [x, y, age*0.3, 1];
+        }
+        if (kind === "hop"){ const x0 = p0 + 0.33*PWc*Math.sin(0.35*12 + ph); return [lerp(x0,p1,q), lerp(TIER[0],TIER[1],smooth(q)), Math.PI/2, 1]; }
+        if (kind === "d1") return [p1 + 0.33*PWc*Math.sin(0.35*w + ph), TIER[1] + 0.25*PHc*Math.sin(0.5*w + ph), age*0.3, 1];
+        if (kind === "out"){ const x0 = p1 + 0.33*PWc*Math.sin(0.35*12 + ph); return [lerp(x0,p1,q), lerp(TIER[1], C_EXIT+10, q), Math.PI/2, 1-q]; }
+        const x0 = p0 + 0.33*PWc*Math.sin(0.35*34 + ph);
+        return [lerp(x0, p0+dx, q), lerp(TIER[0], TIER[0]-52, smooth(q)), age*0.3, 1-q];
+      }
+      acc += d;
+    }
+    return null;
+  };
+  for (const [st, gas, p0, p1, ph, dx] of C.cs){
+    const base = ((f - st) % T + T) % T;
+    for (let m=0;m<4;m++){ const s = cpos(gas, base + m*T, p0, p1, ph, dx); if (s) mol(gas, ...s); }
+  }
+  ptext(ctx, P.cgoLabel, (CX0+CX1)/2, C_EXIT + 4, 17, PAL.GREEN, true, "ma");
+  ptext(ctx, P.cgoSub1, (CX0+CX1)/2, C_EXIT + 23, 14, PAL.GREY, false, "ma");
+  ptext(ctx, P.cgoSub2, (CX0+CX1)/2, C_EXIT + 39, 14, PAL.GREY, false, "ma");
+  ctx.restore();
+}
+
+/* ============ P-S map with live template insets (lamellar + crumpled) ============ */
+let MOL_MUL = 1;                                        // molecule scale used by drawGasMol
+const MAPINS = {cv:{}};
+function renderInset(name, tplKey, P0, own, W0, H0, crop, sc, t, molMul){
+  const P1 = own ? (initParams(tplKey), state.paramsByTpl[tplKey]) : P0;
+  const cw = Math.ceil((crop[2]-crop[0])*sc), ch = Math.ceil((crop[3]-crop[1])*sc);
+  let c = MAPINS.cv[name];
+  if (!c){ c = MAPINS.cv[name] = document.createElement("canvas"); }
+  if (c.width !== cw || c.height !== ch){ c.width = cw; c.height = ch; }
+  const x = c.getContext("2d");
+  x.setTransform(1,0,0,1,0,0); x.clearRect(0,0,cw,ch);
+  // leader lines and brackets go with the text, so thin slate strokes are dropped too
+  if (!x._filtered){
+    const st = x.stroke.bind(x);
+    x.stroke = (...a) => { const s = String(x.strokeStyle).toLowerCase();
+      if ((s === "#64748b" || s === "#334155") && x.lineWidth <= 1.6) return; st(...a); };
+    x._filtered = true;
+  }
+  x.setTransform(sc,0,0,sc,-crop[0]*sc,-crop[1]*sc);
+  ELEM.mute++; const mm = MOL_MUL; MOL_MUL = molMul;
+  try { TEMPLATES[tplKey].draw(x, t, P1, W0, H0); }
+  finally { ELEM.mute--; MOL_MUL = mm; }
+  x.setTransform(1,0,0,1,0,0);
+  return c;
+}
+function fadeEdges(c, fx, fy){
+  const x = c.getContext("2d"), w = c.width, h = c.height;
+  x.save(); x.globalCompositeOperation = "destination-in";
+  let g = x.createLinearGradient(0,0,w,0);
+  g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(fx,"#000"); g.addColorStop(1-fx,"#000"); g.addColorStop(1,"rgba(0,0,0,0)");
+  x.fillStyle = g; x.fillRect(0,0,w,h);
+  g = x.createLinearGradient(0,0,0,h);
+  g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(fy,"#000"); g.addColorStop(1-fy,"#000"); g.addColorStop(1,"rgba(0,0,0,0)");
+  x.fillStyle = g; x.fillRect(0,0,w,h);
+  x.restore();
+}
+function drawMapInsets(ctx,t,P,W,H){
+  const VW = 600, VH = 680, f = t;
+  const k = Math.min(W/VW, H/VH);
+  fitLayout(ctx, W, H, VW, VH, 600, 680);
+  const OX = 52, OY = 533, XEND = 568, YTOP = 14, LINE = [[65,132],[524,500]];
+  const BL = [62,372,300,522], BC = [118,6,420,150];
+  const ub = x => LINE[0][1] + (LINE[1][1]-LINE[0][1])*(x - LINE[0][0])/(LINE[1][0]-LINE[0][0]);
+  const conv = x => ub(x) + 60;
+  psAxes(ctx, OX, OY, XEND, YTOP, P.xAxis, P.yAxis, 18, PAL.NAVY);
+  dashedLine(ctx, ...LINE[0], ...LINE[1], "#7d7d7d", 2, 9, 6);
+  ptext(ctx, "trade-off", LINE[1][0] + 6, LINE[1][1] + 6, 15, PAL.GREY, false, "ra");
+  { const r = prng(3);
+    for (let i=0;i<12;i++){ const cx = uni(r,100,392), cy = conv(cx) + uni(r,-14,14);
+      if (BL[0]-6 < cx && cx < BL[2]+6 && cy > BL[1]-8) continue;
+      dot(ctx, cx, cy, 5.5, rgbaHex(PAL.GO_C,0.55), rgbaHex(PAL.GO_D,0.55), 1); } }
+  const xa = 106, xb = 390, ph = 0.5 - 0.5*Math.cos(TAU*t), cx = xa + (xb-xa)*ph;
+  dot(ctx, cx, conv(cx), 9, PAL.GO_C, PAL.GO_D, 2);
+  ptext(ctx, "thicker", xa - 4, conv(xa) - 36, 15, PAL.GO_D, false, "la");
+  ptext(ctx, "thinner", xb + 14, conv(xb) - 8, 15, PAL.GO_D, false, "la");
+  const sx = 470, sy = 122, pulse = 1 + 0.12*Math.sin(TAU*2*t);
+  dot(ctx, sx, sy, 21*pulse, "rgba(56,142,60,0.18)");
+  starPath(ctx, sx, sy, 15); ctx.fillStyle = PAL.GREEN; ctx.fill(); ctx.strokeStyle = "#1e5a23"; ctx.lineWidth = 1; ctx.stroke();
+  const a0 = [262,338], a1 = [452,142], ang = Math.atan2(a1[1]-a0[1], a1[0]-a0[0]);
+  dashedLine(ctx, ...a0, ...a1, PAL.GREEN, 2.5, 9, 6);
+  arrow(ctx, a1[0] - 16*Math.cos(ang), a1[1] - 16*Math.sin(ang), a1[0], a1[1], PAL.GREEN, 2.5, 12);
+  { const q = (t*2) % 1; dot(ctx, lerp(a0[0],a1[0],q), lerp(a0[1],a1[1],q), 4.5, `rgba(56,142,60,${0.86*Math.sin(Math.PI*q)})`); }
+  ptext(ctx, P.armLabel1, 262, 150, 17, PAL.GREEN, true, "ma");
+  ptext(ctx, P.armLabel2, 262, 170, 17, PAL.GREEN, true, "ma");
+  if (P.showLegend){
+    dot(ctx, 62, 607, 7, PAL.GO_C, PAL.GO_D, 1);
+    ptext(ctx, P.legConv, 78, 597, 16, PAL.TXT, false, "la");
+    starPath(ctx, 62, 645, 9); ctx.fillStyle = PAL.GREEN; ctx.fill(); ctx.strokeStyle = "#1e5a23"; ctx.stroke();
+    ptext(ctx, P.legEng, 78, 635, 16, PAL.TXT, false, "la");
+  }
+  // insets: the two studio templates, rendered live without their text
+  const sc = Math.max(1, Math.min(3, k*1.25));
+  const put = (c, box, crop) => {
+    const bw = box[2]-box[0], bh = box[3]-box[1], cw = crop[2]-crop[0], chh = crop[3]-crop[1];
+    const s = Math.min(bw/cw, bh/chh), tw = cw*s, th = chh*s;
+    ctx.drawImage(c, box[0] + (bw - tw)/2, box[1] + (bh - th)/2, tw, th);
+  };
+  const lamP = Object.assign({}, ...TEMPLATES.lamellar.params.map(p => ({[p.key]: p.def})),
+      {layers:P.lamLayers, membWidth:70, molSize:170, showDims:false, showVerdict:false, showPath:P.lamPath, title:""});
+  const cL = renderInset("lam", "lamellar", lamP, P.ownParams, 860, 540, [172,150,645,385], sc, t, 1);
+  fadeEdges(cL, 0.07, 0.05); put(cL, BL, [172,150,645,385]);
+  const cgP = Object.assign({}, ...TEMPLATES.crumpled.params.map(p => ({[p.key]: p.def})));
+  const cC = renderInset("cgo", "crumpled", cgP, P.ownParams, 800, 450, [75,65,725,400], sc, t, P.cgoMol/100);
+  fadeEdges(cC, 0.07, 0.05); put(cC, BC, [75,65,725,400]);
+  ctx.restore();
+}
+
 const TEMPLATES = {
+  goCsLayers: {
+    name: "GO/chitosan laminate — H₂O permeation (cross-section)",
+    desc: "A GO/chitosan composite laminate seen edge-on: rows of GO flakes in brick order, each a patchwork of oxidized domains (orange) carrying grafted chitosan chains and bare graphitic domains (grey). H₂O drops in from the feed and works its way down: along each gallery it hops from one chitosan tip to the next, pausing at each (sorption, dashed H-bond), slides quickly over the graphitic patches, and falls through the slit where a flake ends. CO₂ barely sorbs — it touches the outer chitosan brush and is turned back. The dashed guide is the real route of one molecule.",
+    draw: drawGOCSLayers,
+    canvas: {w:860, h:480},
+    anim: {duration:5, fps:16},
+    params: [
+      {key:"gasA",      label:"Gas A (permeating)",   type:"select", def:"H2O", options:GAS_OPTIONS},
+      {key:"gasB",      label:"Gas B (rejected)",     type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"nA",        label:"Gas A molecules",      type:"range", min:2, max:30, step:1, def:10},
+      {key:"nB",        label:"Gas B molecules",      type:"range", min:0, max:12, step:1, def:4},
+      {key:"feedMols",  label:"Idle feed molecules",  type:"range", min:0, max:20, step:1, def:6},
+      {key:"speed",     label:"Flow speed",           type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"dwell",     label:"Sorption stop ×",      type:"range", min:0, max:6, step:0.5, def:2.5},
+      {key:"layers",    label:"GO layers",            type:"range", min:2, max:6, step:1, def:4},
+      {key:"flakeLen",  label:"Flake length %",       type:"range", min:50, max:200, step:5, def:100},
+      {key:"interlayer",label:"Gallery height %",     type:"range", min:60, max:180, step:5, def:100},
+      {key:"oxFrac",    label:"Oxidized area %",      type:"range", min:0, max:100, step:5, def:60},
+      {key:"density",   label:"Chitosan density",     type:"range", min:0.5, max:4, step:0.5, def:2},
+      {key:"chainLen",  label:"Chitosan length %",    type:"range", min:50, max:140, step:5, def:100},
+      {key:"molSize",   label:"Molecule size %",      type:"range", min:60, max:220, step:5, def:120},
+      {key:"oxColor",   label:"Oxidized GO",          type:"color", def:"#c2621f"},
+      {key:"grColor",   label:"Graphitic GO",         type:"color", def:"#4b5563"},
+      {key:"csColor",   label:"Chitosan",             type:"color", def:"#4c9a50"},
+      {key:"csTip",     label:"Chitosan end",         type:"color", def:"#166534"},
+      {key:"supColor",  label:"Support",              type:"color", def:"#1e293b"},
+      {key:"pathColor", label:"Path guide",           type:"color", def:"#dc2626"},
+      {key:"showPath",  label:"Path guide",           type:"checkbox", def:true},
+      {key:"showHB",    label:"H-bond dashes",        type:"checkbox", def:true},
+      {key:"showZones", label:"Feed / permeate boxes",type:"checkbox", def:true},
+      {key:"showSupport",label:"Porous support",      type:"checkbox", def:true},
+      {key:"showKey",   label:"Molecule key",         type:"checkbox", def:true},
+      {key:"textSize",  label:"Label size %",         type:"range", min:60, max:200, step:5, def:100},
+      {key:"title",     label:"Title",                type:"text", def:""},
+      {key:"feedLabel", label:"Feed label",           type:"text", def:"auto"},
+      {key:"permLabel", label:"Permeate label",       type:"text", def:"auto"},
+      {key:"rejLabel",  label:"Rejected-gas label",   type:"text", def:"auto"},
+      {key:"oxLabel",   label:"Oxidized legend",      type:"text", def:"auto"},
+      {key:"grLabel",   label:"Graphitic legend",     type:"text", def:"graphitic GO: low-friction slip"},
+      {key:"membLabel", label:"Laminate label",       type:"text", def:"GO/CS laminate"},
+      {key:"supLabel",  label:"Support label",        type:"text", def:"support"},
+      {key:"dpLabel",   label:"Driving-force label",  type:"text", def:"ΔP"},
+    ],
+  },
+  goCs3D: {
+    name: "GO/chitosan composite — 3D chitosan channels (H₂O / CO₂)",
+    desc: "Pseudo-3D close-up of a GO/chitosan composite: a graphene-oxide sheet (hydrophobic basal plane, honeycomb) carrying parallel chitosan chains drawn as space-filling CPK atoms (C grey, O red, N blue, H white) with a cyan glow. Between neighbouring chains run hydrophilic channels (translucent blue slabs): H₂O enters a channel mouth (blue arrow) and travels along it, hopping between chitosan sites; CO₂ reaches the mouth, rattles and is turned away (red arrow). The chains are a schematic glucosamine model, not an MD snapshot. Turn the camera with yaw / pitch.",
+    draw: drawGOCS3D,
+    canvas: {w:860, h:600},
+    anim: {duration:5.5, fps:16},
+    params: [
+      {key:"chains",    label:"Chitosan chains",      type:"range", min:2, max:4, step:1, def:3},
+      {key:"nWater",    label:"H₂O per channel",      type:"range", min:1, max:10, step:1, def:5},
+      {key:"nCO2",      label:"CO₂ per channel",      type:"range", min:0, max:5, step:1, def:2},
+      {key:"speed",     label:"Speed ×",              type:"range", min:0.5, max:2, step:0.1, def:1},
+      {key:"yaw",       label:"Camera yaw (°)",       type:"range", min:20, max:80, step:1, def:50},
+      {key:"pitch",     label:"Camera pitch (°)",     type:"range", min:25, max:80, step:1, def:55},
+      {key:"zoom",      label:"Zoom %",               type:"range", min:60, max:130, step:5, def:100},
+      {key:"atomScale", label:"Chain atom size %",    type:"range", min:60, max:130, step:5, def:100},
+      {key:"molScale",  label:"H₂O / CO₂ size %",     type:"range", min:60, max:180, step:5, def:100},
+      {key:"sheetColor",label:"GO sheet",             type:"color", def:"#e8d6ba"},
+      {key:"glowColor", label:"Chain glow",           type:"color", def:"#46bef5"},
+      {key:"chanColor", label:"Channel",              type:"color", def:"#3caaeb"},
+      {key:"inColor",   label:"Inlet arrow",          type:"color", def:"#5faaeb"},
+      {key:"rejColor",  label:"Rejection arrow",      type:"color", def:"#c4463a"},
+      {key:"showHoney", label:"Honeycomb lattice",    type:"checkbox", def:true},
+      {key:"showGlow",  label:"Chain glow",           type:"checkbox", def:true},
+      {key:"showChan",  label:"Channel slabs",        type:"checkbox", def:true},
+      {key:"chanAlpha", label:"Channel opacity %",    type:"range", min:10, max:100, step:5, def:100},
+      {key:"phobLabel", label:"Sheet label",          type:"text", def:"hydrophobic"},
+      {key:"philLabel", label:"Channel label",        type:"text", def:"hydrophilic"},
+    ],
+  },
+  pathwayEng: {
+    name: "Pathway engineering — coupled vs decoupled (3 panels)",
+    desc: "Decoupling permeability and selectivity in 2D membranes. Left: a conventional GO laminate, where one tortuous gallery route sets both the transport length (permeance) and the number of sieving events (selectivity) — coupled, hence the trade-off; CO₂ is turned back at a flake edge part-way down. Middle: the same thickness with aligned Å-scale pores — path ≈ thickness and a single sieving gate at the pore mouth, so the two are decoupled. Right: a schematic permeance–selectivity map with the conventional point sliding along the trade-off line (thicker ↔ thinner) and the engineered star above it. Same molecules, speeds and feed in both panels.",
+    draw: drawPathwayEng,
+    canvas: {w:1240, h:560},
+    anim: {duration:6, fps:16},
+    params: [
+      {key:"rows",      label:"Flake rows",           type:"range", min:4, max:9, step:1, def:7},
+      {key:"pores",     label:"Engineered pores",     type:"range", min:2, max:6, step:1, def:4},
+      {key:"speed",     label:"Speed ×",              type:"range", min:0.5, max:2, step:0.1, def:1},
+      {key:"goColor",   label:"GO flakes",            type:"color", def:"#c46220"},
+      {key:"goEdge",    label:"GO edge / accent",     type:"color", def:"#964614"},
+      {key:"showMap",   label:"Trade-off map panel",  type:"checkbox", def:true},
+      {key:"showBars",  label:"Permeance / selectivity bars", type:"checkbox", def:true},
+      {key:"showGuide", label:"Tortuous path guide",  type:"checkbox", def:true},
+      {key:"showZones", label:"Feed / permeate boxes",type:"checkbox", def:true},
+      {key:"title",     label:"Title",                type:"text", def:"Decoupling permeability and selectivity in 2D membranes through pathway engineering"},
+      {key:"leftTitle", label:"Left title",           type:"text", def:"Conventional laminate: coupled"},
+      {key:"leftSub",   label:"Left subtitle",        type:"text", def:"one tortuous gallery sets both flux and sieving"},
+      {key:"rightTitle",label:"Middle title",         type:"text", def:"Pathway-engineered: decoupled"},
+      {key:"rightSub",  label:"Middle subtitle",      type:"text", def:"straight Å-scale pores: short path + one sieving gate"},
+      {key:"feedLabel", label:"Feed label",           type:"text", def:"feed  H₂ + CO₂"},
+      {key:"permLabel", label:"Permeate label",       type:"text", def:"permeate"},
+      {key:"permBar",   label:"Bar 1 label",          type:"text", def:"H₂ permeance"},
+      {key:"selBar",    label:"Bar 2 label",          type:"text", def:"H₂/CO₂ selectivity"},
+      {key:"mapTitle",  label:"Map title",            type:"text", def:"Permeance–selectivity map"},
+      {key:"mapSub",    label:"Map subtitle",         type:"text", def:"schematic, log–log"},
+      {key:"xAxis",     label:"x axis",               type:"text", def:"H₂ permeance"},
+      {key:"yAxis",     label:"y axis",               type:"text", def:"H₂/CO₂ selectivity"},
+      {key:"engLabel1", label:"Arrow label 1",        type:"text", def:"pathway"},
+      {key:"engLabel2", label:"Arrow label 2",        type:"text", def:"engineering"},
+      {key:"legConv",   label:"Legend: circle",       type:"text", def:"conventional 2D laminates"},
+      {key:"legEng",    label:"Legend: star",         type:"text", def:"pathway-engineered"},
+      {key:"footer",    label:"Footer",               type:"text", def:"Same thickness, same molecules, same feed — only the transport pathway is changed"},
+    ],
+  },
+  crumpledMap: {
+    name: "P–S map — flat vs crumpled GO insets (title slide)",
+    desc: "Compact permeance–selectivity map for a title slide. Lower left, below the trade-off line: a flat GO laminate where H₂ crawls a long tortuous gallery route and CO₂ is turned back at the flake edges. Upper right, above the line: crumpled multidomain GO — expanded pockets take gas up and carry it, compact bands sieve, so H₂ goes through quickly while CO₂ is held back. A green 'strain-induced crumpling' arrow links the two.",
+    draw: drawCrumpledMap,
+    canvas: {w:600, h:510},
+    anim: {duration:5.5, fps:16},
+    params: [
+      {key:"speed",     label:"Speed ×",              type:"range", min:0.5, max:2, step:0.1, def:1},
+      {key:"xAxis",     label:"x axis",               type:"text", def:"H₂ permeance"},
+      {key:"yAxis",     label:"y axis",               type:"text", def:"H₂/CO₂ selectivity"},
+      {key:"armLabel1", label:"Arrow label 1",        type:"text", def:"strain-induced"},
+      {key:"armLabel2", label:"Arrow label 2",        type:"text", def:"crumpling"},
+      {key:"flatLabel", label:"Flat inset title",     type:"text", def:"Flat GO"},
+      {key:"flatSub",   label:"Flat inset caption",   type:"text", def:"long tortuous path: slow"},
+      {key:"cgoLabel",  label:"Crumpled inset title", type:"text", def:"Crumpled GO"},
+      {key:"cgoSub1",   label:"Crumpled caption 1",   type:"text", def:"expanded domains carry,"},
+      {key:"cgoSub2",   label:"Crumpled caption 2",   type:"text", def:"compact domains sieve"},
+    ],
+  },
+  mapInsets: {
+    name: "P–S map — lamellar + crumpled template insets",
+    desc: "The permeance–selectivity map from the pathway-engineering figure with two other templates of this studio running live as text-free insets: 'Lamellar GO membrane — tortuous path' at lower left (below the trade-off line) and 'Crumpled GO membrane — cross-section' at the top, beside the engineered star. Tick 'Use my Lamellar / Crumpled settings' to drive the insets with whatever you have set in those two templates (gases, colours, layers ...).",
+    draw: drawMapInsets,
+    canvas: {w:600, h:680},
+    anim: {duration:5.5, fps:16},
+    params: [
+      {key:"lamLayers", label:"Lamellar inset layers",type:"range", min:3, max:9, step:1, def:4},
+      {key:"lamPath",   label:"Lamellar path guide",  type:"checkbox", def:true},
+      {key:"cgoMol",    label:"Crumpled inset molecules %", type:"range", min:80, max:250, step:5, def:175},
+      {key:"ownParams", label:"Use my Lamellar / Crumpled settings", type:"checkbox", def:false},
+      {key:"showLegend",label:"Legend",               type:"checkbox", def:true},
+      {key:"xAxis",     label:"x axis",               type:"text", def:"H₂ permeance"},
+      {key:"yAxis",     label:"y axis",               type:"text", def:"H₂/CO₂ selectivity"},
+      {key:"armLabel1", label:"Arrow label 1",        type:"text", def:"pathway"},
+      {key:"armLabel2", label:"Arrow label 2",        type:"text", def:"engineering"},
+      {key:"legConv",   label:"Legend: circle",       type:"text", def:"conventional 2D laminates"},
+      {key:"legEng",    label:"Legend: star",         type:"text", def:"pathway-engineered"},
+    ],
+  },
   flow: {
     name: "Flow reactor (packed bed)",
     desc: "Gas molecules flow through a packed catalyst bed and change color as they convert to products.",
@@ -2659,7 +3979,8 @@ const TEMPLATES = {
 const state = {
   template:"flow", width:800, height:450, bg:"#ffffff",
   duration:3, fps:20, colors:256, title:"", titleColor:"#0f172a",
-  paramsByTpl:{},
+  transparent:false, matte:"#ffffff", alphaCut:12,
+  paramsByTpl:{}, hiddenByTpl:{},
 };
 function P(){ return state.paramsByTpl[state.template]; }
 function initParams(tpl){
@@ -2704,7 +4025,7 @@ function buildParamControls(){
       lab.appendChild(inp);
     } else {
       inp.type = "text"; inp.value = cur;
-      inp.addEventListener("input", () => { P()[p.key] = inp.value; });
+      inp.addEventListener("input", () => { P()[p.key] = inp.value; elemForget(); });
       lab.appendChild(inp);
     }
     box.appendChild(lab);
@@ -2724,8 +4045,15 @@ function buildParamControls(){
     initParams(state.template);
     const cs = TEMPLATES[state.template].canvas;
     if (cs){ state.width = cs.w; state.height = cs.h; $("#cw").value = cs.w; $("#ch").value = cs.h; }
+    const an = TEMPLATES[state.template].anim;
+    if (an){
+      state.duration = an.duration; state.fps = an.fps;
+      $("#dur").value = an.duration; $("#durV").textContent = an.duration + " s";
+      $("#fps").value = an.fps; $("#fpsV").textContent = an.fps;
+    }
     buildParamControls();
     $("#tplDesc").textContent = TEMPLATES[state.template].desc;
+    elemReset();
   });
 }
 initParams(state.template);
@@ -2736,15 +4064,59 @@ $("#tplDesc").textContent = TEMPLATES[state.template].desc;
 $("#cw").addEventListener("input", e => { state.width  = clamp(parseInt(e.target.value)||800, 200, 1600); });
 $("#ch").addEventListener("input", e => { state.height = clamp(parseInt(e.target.value)||450, 200, 1200); });
 $("#bg").addEventListener("input", e => { state.bg = e.target.value; });
-$("#title").addEventListener("input", e => { state.title = e.target.value; });
+$("#transp").addEventListener("input", e => {
+  state.transparent = e.target.checked;
+  $("#transpOpts").hidden = !state.transparent;
+  $("#canvas").classList.toggle("transp", state.transparent);
+});
+$("#matte").addEventListener("input", e => { state.matte = e.target.value; });
+$("#acut").addEventListener("input", e => { state.alphaCut = parseInt(e.target.value); $("#acutV").textContent = e.target.value; });
+$("#title").addEventListener("input", e => { state.title = e.target.value; elemForget(); });
 $("#titleColor").addEventListener("input", e => { state.titleColor = e.target.value; });
 $("#dur").addEventListener("input", e => { state.duration = parseFloat(e.target.value); $("#durV").textContent = e.target.value+" s"; });
 $("#fps").addEventListener("input", e => { state.fps = parseInt(e.target.value); $("#fpsV").textContent = e.target.value; });
 
+/* ============================ text & arrow list ============================ */
+function hiddenSet(){
+  return state.hiddenByTpl[state.template] || (state.hiddenByTpl[state.template] = new Set());
+}
+function elemForget(){ ELEM.seen.clear(); ELEM.nArrow = 0; ELEM.dirty = true; }
+function elemReset(){ ELEM.hidden = hiddenSet(); ELEM.hl = null; elemForget(); }
+function elemBuildList(){
+  const box = $("#elemList"), top = box.scrollTop;
+  box.innerHTML = "";
+  const items = [...ELEM.seen.entries()];
+  items.sort((a,b) => (a[1].kind === b[1].kind ? 0 : a[1].kind === "T" ? -1 : 1));
+  for (const [key, it] of items){
+    const row = document.createElement("label");
+    row.className = "erow" + (ELEM.hidden.has(key) ? " off" : "");
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !ELEM.hidden.has(key);
+    cb.addEventListener("input", () => {
+      if (cb.checked) ELEM.hidden.delete(key); else ELEM.hidden.add(key);
+      row.classList.toggle("off", !cb.checked);
+    });
+    const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = it.color || "#0f172a";
+    const lb = document.createElement("span"); lb.className = "lb";
+    lb.textContent = (it.kind === "T" ? "“" + it.label + "”" : "➜ " + it.label);
+    lb.title = it.label;
+    row.append(cb, sw, lb);
+    row.addEventListener("mouseenter", () => { ELEM.hl = key; });
+    row.addEventListener("mouseleave", () => { if (ELEM.hl === key) ELEM.hl = null; });
+    box.appendChild(row);
+  }
+  box.scrollTop = top;
+}
+setInterval(() => { if (ELEM.dirty){ ELEM.dirty = false; elemBuildList(); } }, 400);
+$("#showText").addEventListener("input", e => { ELEM.hideText = !e.target.checked; });
+$("#showArrows").addEventListener("input", e => { ELEM.hideArrows = !e.target.checked; });
+$("#elemAll").addEventListener("click", () => { ELEM.hidden.clear(); elemBuildList(); });
+$("#elemNone").addEventListener("click", () => { for (const k of ELEM.seen.keys()) ELEM.hidden.add(k); elemBuildList(); });
+elemReset();
+
 /* ============================ render loop ============================ */
 function render(ctx,t,W,H){
-  ctx.fillStyle = state.bg;
-  ctx.fillRect(0,0,W,H);
+  ctx.clearRect(0,0,W,H);
+  if (!state.transparent){ ctx.fillStyle = state.bg; ctx.fillRect(0,0,W,H); }
   TEMPLATES[state.template].draw(ctx,t,P(),W,H);
   if (state.title) text(ctx, state.title, W/2, 26*(W/800), {size:20*(W/800), bold:true, color:state.titleColor});
 }
@@ -2756,7 +4128,9 @@ function tick(now){
   if (cv.width  !== state.width)  cv.width  = state.width;
   if (cv.height !== state.height) cv.height = state.height;
   lastT = ((now/1000) % state.duration) / state.duration;
-  render(cctx, lastT, state.width, state.height);
+  ELEM.live = true;
+  try { render(cctx, lastT, state.width, state.height); }
+  finally { ELEM.live = false; }
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
@@ -2771,28 +4145,72 @@ async function buildGif(onProgress){
   const frames = Math.max(2, Math.round(state.fps * state.duration));
   const oc = document.createElement("canvas"); oc.width = W; oc.height = H;
   const ctx = oc.getContext("2d", {willReadFrequently:true});
+  const transp = state.transparent;
+  const cut = Math.round(state.alphaCut/100*255), [mr,mg,mb] = hex2rgb(state.matte);
+  // transparent mode: see-through pixels -> alpha 0; partly covered ones are
+  // blended onto the matte colour and made opaque (a GIF pixel is on or off)
+  const grab = f => {
+    render(ctx, f/frames, W, H);
+    const d = ctx.getImageData(0,0,W,H).data;
+    if (transp){
+      for (let i=0;i<d.length;i+=4){
+        const a = d[i+3];
+        if (a === 255) continue;
+        if (a < cut){ d[i+3] = 0; continue; }
+        const u = a/255;
+        d[i] = Math.round(d[i]*u + mr*(1-u)); d[i+1] = Math.round(d[i+1]*u + mg*(1-u));
+        d[i+2] = Math.round(d[i+2]*u + mb*(1-u)); d[i+3] = 255;
+      }
+    }
+    return d;
+  };
 
   const hist = newHistogram();
   for (let f=0; f<frames; f++){
-    render(ctx, f/frames, W, H);
-    addToHistogram(hist, ctx.getImageData(0,0,W,H).data);
+    addToHistogram(hist, grab(f));
     if (onProgress){ onProgress((f+1)/frames*0.5); await new Promise(r => setTimeout(r)); }
   }
   // one slot is spent on transparency so unchanged pixels cost almost nothing
   const {palette, lut} = buildPalette(hist, Math.max(2, state.colors - 1));
   const tIdx = palette.length;
-  palette.push([0,0,0]);
+  palette.push(transp ? [mr,mg,mb] : [0,0,0]);
 
   const enc = new GifEncoder(W, H, state.fps, palette, tIdx);
-  const cur = new Uint8Array(W*H), prev = new Uint8Array(W*H), out = new Uint8Array(W*H);
+  const index = d => {
+    const a = new Uint8Array(W*H);
+    for (let i=0,p=0; i<d.length; i+=4,p++) a[p] = d[i+3] === 0 ? tIdx : lut[bin5(d[i],d[i+1],d[i+2])];
+    return a;
+  };
+  const out = new Uint8Array(W*H);
+  if (!transp){
+    const prev = new Uint8Array(W*H);
+    for (let f=0; f<frames; f++){
+      const cur = index(grab(f));
+      if (f === 0) out.set(cur);
+      else for (let p=0; p<cur.length; p++) out[p] = cur[p] === prev[p] ? tIdx : cur[p];
+      enc.addFrame(out);
+      prev.set(cur);
+      if (onProgress){ onProgress(0.5 + (f+1)/frames*0.5); await new Promise(r => setTimeout(r)); }
+    }
+    return enc.finish();
+  }
+  /* Transparent background: "unchanged" and "background" share the one
+     transparent index, so a pixel that goes from drawn to background cannot be
+     written as a difference. A frame whose successor uncovers background is
+     given disposal 2 (cleared after display) and the next frame is stored whole;
+     every other frame keeps disposal 1 and stores only what changed. */
+  const first = index(grab(0));
+  let cur = first, cleared = true, prevStored = null;
   for (let f=0; f<frames; f++){
-    render(ctx, f/frames, W, H);
-    const d = ctx.getImageData(0,0,W,H).data;
-    for (let i=0,p=0; i<d.length; i+=4,p++) cur[p] = lut[bin5(d[i],d[i+1],d[i+2])];
-    if (f === 0) out.set(cur);
-    else for (let p=0; p<cur.length; p++) out[p] = cur[p] === prev[p] ? tIdx : cur[p];
-    enc.addFrame(out);
-    prev.set(cur);
+    const next = f+1 < frames ? index(grab(f+1)) : first;
+    let uncover = false;
+    for (let p=0; p<cur.length; p++) if (cur[p] !== tIdx && next[p] === tIdx){ uncover = true; break; }
+    if (cleared) out.set(cur);
+    else for (let p=0; p<cur.length; p++) out[p] = cur[p] === prevStored[p] ? tIdx : cur[p];
+    enc.addFrame(out, uncover ? 2 : 1);
+    prevStored = cur;
+    cleared = uncover;
+    cur = next;
     if (onProgress){ onProgress(0.5 + (f+1)/frames*0.5); await new Promise(r => setTimeout(r)); }
   }
   return enc.finish();
