@@ -10,18 +10,24 @@
     --accent:#2563eb; --border:#e2e8f0;
   }
   *{box-sizing:border-box}
+  [hidden]{display:none !important}
   body{margin:0;font-family:"Segoe UI",system-ui,Arial,sans-serif;background:var(--bg);color:var(--ink);display:flex;min-height:100vh}
-  #sidebar{width:330px;min-width:330px;background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow-y:auto;height:100vh}
+  #sidebar{width:var(--sbw,330px);flex:none;background:var(--panel);padding:16px;overflow-y:auto;height:100vh}
+  #resizer{flex:none;width:7px;cursor:col-resize;height:100vh;position:sticky;top:0;
+    background:linear-gradient(to right,transparent 3px,var(--border) 3px,var(--border) 4px,transparent 4px)}
+  #resizer:hover,#resizer.drag{background:linear-gradient(to right,transparent 2px,var(--accent) 2px,var(--accent) 5px,transparent 5px)}
+  body.resizing{cursor:col-resize;user-select:none}
+  body.resizing #canvas{pointer-events:none}
   h1{font-size:17px;margin:0 0 2px}
   .sub{font-size:12px;color:var(--muted);margin-bottom:14px}
-  fieldset{border:1px solid var(--border);border-radius:8px;margin:0 0 12px;padding:8px 12px 10px}
+  fieldset{border:1px solid var(--border);border-radius:8px;margin:0 0 12px;padding:8px 12px 10px;min-width:0}
   legend{font-size:11px;font-weight:600;color:var(--muted);padding:0 4px;text-transform:uppercase;letter-spacing:.05em}
   label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;margin:7px 0}
-  label>span:first-child{white-space:nowrap}
+  label>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
   span.val{color:var(--muted);font-size:12px;min-width:34px;text-align:right}
   input[type=range]{flex:1;min-width:60px}
   input[type=text],input[type=number],select{padding:4px 6px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px;background:#fff}
-  input[type=text]{width:160px}
+  input[type=text]{width:160px;flex:1 1 160px;min-width:90px}
   input[type=number]{width:74px}
   input[type=color]{width:38px;height:24px;border:1px solid var(--border);border-radius:4px;padding:1px;background:none;cursor:pointer}
   select{width:100%}
@@ -46,6 +52,15 @@
   .erow.off .lb{color:#94a3b8;text-decoration:line-through}
   .row2{display:flex;gap:6px}
   .row2 button{margin:4px 0;padding:5px 6px;font-size:12px}
+  #dirtyBar{margin-top:8px;padding:6px 8px;border:1px solid #fcd34d;background:#fffbeb;border-radius:6px;font-size:12px;color:#92400e}
+  #dirtyBar .row2 button{margin:4px 0 0}
+  #presetDlg{border:1px solid var(--border);border-radius:10px;padding:16px 18px;width:min(380px,92vw);box-shadow:0 12px 40px rgba(15,23,42,.25);font-size:13px}
+  #presetDlg::backdrop{background:rgba(15,23,42,.35)}
+  #presetDlg h3{margin:0 0 6px;font-size:15px}
+  #presetDlg p{margin:0 0 10px;color:var(--muted);line-height:1.4}
+  #presetDlg input[type=text]{width:100%;margin:2px 0 10px}
+  #presetDlg .btns{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+  #presetDlg .btns button{width:auto;margin:0;padding:6px 12px}
 </style>
 </head>
 <body>
@@ -57,6 +72,13 @@
     <legend>Template</legend>
     <select id="tplSelect"></select>
     <div class="desc" id="tplDesc"></div>
+    <div id="dirtyBar" hidden>
+      <div>Settings changed &mdash; save them as a preset?</div>
+      <div class="row2"><button id="dirtySave" class="primary">Save as preset&hellip;</button><button id="dirtyRevert">Revert</button></div>
+    </div>
+    <div class="row2"><button id="presetSave">Save as preset&hellip;</button><button id="presetDel" hidden>Delete preset</button></div>
+    <div class="row2"><button id="presetExport">Export presets</button><button id="presetImport">Import presets&hellip;</button></div>
+    <input type="file" id="presetFile" accept=".json,application/json" hidden>
   </fieldset>
 
   <fieldset>
@@ -104,10 +126,21 @@
 
   <div class="foot">All GIFs loop seamlessly. Everything renders locally in your browser &mdash; nothing is uploaded.</div>
 </div>
+<div id="resizer" title="Drag to resize the panel (double-click to reset)"></div>
 <div id="main">
   <canvas id="canvas" width="800" height="450"></canvas>
   <div id="hint">Live preview &mdash; the exported GIF matches exactly.</div>
 </div>
+
+<dialog id="presetDlg">
+  <form method="dialog">
+    <h3 id="pdTitle">Save as preset</h3>
+    <p id="pdMsg"></p>
+    <label style="display:block"><span>Preset name</span>
+      <input type="text" id="pdName" maxlength="80" autocomplete="off"></label>
+    <div class="btns" id="pdBtns"></div>
+  </form>
+</dialog>
 
 <script>
 "use strict";
@@ -3429,6 +3462,15 @@ function drawMapInsets(ctx,t,P,W,H){
   };
   const lamP = Object.assign({}, ...TEMPLATES.lamellar.params.map(p => ({[p.key]: p.def})),
       {layers:P.lamLayers, membWidth:70, molSize:170, showDims:false, showVerdict:false, showPath:P.lamPath, title:""});
+  {
+    // the lamellar template decides per CO2 stream (rnd(q+6) < permB), so pick permB
+    // just above the n-th smallest threshold: exactly P.lamCO2 streams cross
+    const vL = parseFloat(lamP.speed), mL = flowM(vL), thr = [];
+    for (let i=0;i<flowCount(lamP.nB, vL);i+=mL) thr.push(rnd(Math.floor(i/mL)*9+51+6)*100);
+    thr.sort((a,b) => a-b);
+    const n = Math.min(P.lamCO2, thr.length);
+    lamP.permB = n > 0 ? Math.min(100, thr[n-1] + 0.5) : 0;
+  }
   const cL = renderInset("lam", "lamellar", lamP, P.ownParams, 860, 540, [172,150,645,385], sc, t, 1);
   fadeEdges(cL, 0.07, 0.05); put(cL, BL, [172,150,645,385]);
   const cgP = Object.assign({}, ...TEMPLATES.crumpled.params.map(p => ({[p.key]: p.def})));
@@ -3575,6 +3617,7 @@ const TEMPLATES = {
     params: [
       {key:"lamLayers", label:"Lamellar inset layers",type:"range", min:3, max:9, step:1, def:4},
       {key:"lamPath",   label:"Lamellar path guide",  type:"checkbox", def:true},
+      {key:"lamCO2",    label:"Lamellar CO₂ streams crossing", type:"range", min:0, max:3, step:1, def:1},
       {key:"cgoMol",    label:"Crumpled inset molecules %", type:"range", min:80, max:250, step:5, def:175},
       {key:"ownParams", label:"Use my Lamellar / Crumpled settings", type:"checkbox", def:false},
       {key:"showLegend",label:"Legend",               type:"checkbox", def:true},
@@ -3995,7 +4038,7 @@ function buildParamControls(){
   const box = $("#tplParams"); box.innerHTML = "";
   for (const p of TEMPLATES[state.template].params){
     const lab = document.createElement("label");
-    const name = document.createElement("span"); name.textContent = p.label;
+    const name = document.createElement("span"); name.textContent = p.label; name.title = p.label;
     lab.appendChild(name);
     const cur = P()[p.key];
     let inp = document.createElement("input");
@@ -4032,33 +4075,285 @@ function buildParamControls(){
   }
 }
 
+/* ============================ templates & presets ============================ */
+/* A preset is a saved copy of everything you can set for one template: its
+   options, the hidden text/arrow list and the canvas / animation / export
+   settings. Presets live in this browser (localStorage) and can be exported
+   to / imported from a .json file. */
+const PRESET_KEY = "scigif.presets.v1";
+function loadPresets(){
+  try { const a = JSON.parse(localStorage.getItem(PRESET_KEY) || "[]"); return Array.isArray(a) ? a : []; }
+  catch (e){ return []; }
+}
+let PRESETS = loadPresets();
+function storePresets(){
+  try { localStorage.setItem(PRESET_KEY, JSON.stringify(PRESETS)); return true; }
+  catch (e){ alert("Could not store presets in this browser: " + e.message + "\nUse Export presets to keep a copy."); return false; }
+}
+function defaultsOf(tpl){
+  const o = {};
+  for (const p of TEMPLATES[tpl].params) o[p.key] = p.def;
+  return o;
+}
+function byName(a, b){ return a.localeCompare(b, undefined, {sensitivity:"base", numeric:true}); }
+function snap(){
+  return {
+    base: state.template, params: {...P()}, hidden: [...hiddenSet()].sort(),
+    width: state.width, height: state.height, bg: state.bg,
+    duration: state.duration, fps: state.fps,
+    transparent: state.transparent, matte: state.matte, alphaCut: state.alphaCut,
+    title: state.title, titleColor: state.titleColor,
+    showText: !ELEM.hideText, showArrows: !ELEM.hideArrows,
+  };
+}
+function sig(o){   // key-order independent fingerprint
+  const norm = v => Array.isArray(v) ? v.map(norm)
+    : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, norm(v[k])])) : v;
+  const c = {...o}; delete c.id; delete c.name; delete c.saved;
+  return JSON.stringify(norm(c));
+}
+const PS = {active:null, baseline:null, declined:{}};   // active preset id, snapshot to compare against
+function isDirty(){ return PS.baseline !== null && sig(snap()) !== sig(PS.baseline); }
+
+function syncGlobalUI(){
+  $("#cw").value = state.width; $("#ch").value = state.height; $("#bg").value = state.bg;
+  $("#dur").value = state.duration; $("#durV").textContent = state.duration + " s";
+  $("#fps").value = state.fps; $("#fpsV").textContent = state.fps;
+  $("#transp").checked = state.transparent; $("#transpOpts").hidden = !state.transparent;
+  $("#canvas").classList.toggle("transp", state.transparent);
+  $("#matte").value = state.matte; $("#acut").value = state.alphaCut; $("#acutV").textContent = state.alphaCut;
+  $("#title").value = state.title; $("#titleColor").value = state.titleColor;
+  $("#showText").checked = !ELEM.hideText; $("#showArrows").checked = !ELEM.hideArrows;
+}
+function applySnap(o){
+  state.template = o.base;
+  state.paramsByTpl[o.base] = {...defaultsOf(o.base), ...(o.params || {})};
+  state.hiddenByTpl[o.base] = new Set(o.hidden || []);
+  for (const k of ["width","height","bg","duration","fps","transparent","matte","alphaCut","title","titleColor"])
+    if (k in o) state[k] = o[k];
+  if ("showText" in o) ELEM.hideText = !o.showText;
+  if ("showArrows" in o) ELEM.hideArrows = !o.showArrows;
+  syncGlobalUI();
+  buildParamControls();
+  $("#tplDesc").textContent = TEMPLATES[o.base].desc;
+  elemReset();
+}
+function loadBuiltin(id){
+  state.template = id;
+  initParams(id);
+  const cs = TEMPLATES[id].canvas;
+  if (cs){ state.width = cs.w; state.height = cs.h; }
+  const an = TEMPLATES[id].anim;
+  if (an){ state.duration = an.duration; state.fps = an.fps; }
+  syncGlobalUI();
+  buildParamControls();
+  $("#tplDesc").textContent = TEMPLATES[id].desc;
+  elemReset();
+  PS.active = null;
+  PS.baseline = {...snap(), params: defaultsOf(id), hidden: []};   // compare with the template's defaults
+}
+function loadPreset(pr){
+  if (!TEMPLATES[pr.base]){ alert(`Preset "${pr.name}" needs the template "${pr.base}", which this studio does not have.`); return false; }
+  applySnap(pr);
+  PS.active = pr.id;
+  PS.baseline = snap();
+  return true;
+}
+function selectValue(v){
+  if (v.startsWith("preset:")){
+    const pr = PRESETS.find(x => "preset:" + x.id === v);
+    if (pr && loadPreset(pr)) return;
+    v = state.template;
+  }
+  loadBuiltin(v);
+}
+function currentValue(){ return PS.active ? "preset:" + PS.active : state.template; }
+
+function buildTplSelect(){
+  const sel = $("#tplSelect");
+  sel.innerHTML = "";
+  if (PRESETS.length){
+    const g = document.createElement("optgroup"); g.label = "My presets";
+    for (const pr of [...PRESETS].sort((a,b) => byName(a.name, b.name))){
+      const o = document.createElement("option");
+      o.value = "preset:" + pr.id;
+      o.textContent = "★ " + pr.name + (TEMPLATES[pr.base] ? "" : "  (template missing)");
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  }
+  const g = document.createElement("optgroup"); g.label = "Templates (A–Z)";
+  for (const [id,tpl] of Object.entries(TEMPLATES).sort((a,b) => byName(a[1].name, b[1].name))){
+    const o = document.createElement("option");
+    o.value = id; o.textContent = tpl.name;
+    g.appendChild(o);
+  }
+  sel.appendChild(g);
+  sel.value = currentValue();
+  $("#presetDel").hidden = !PS.active;
+}
+
+function uniqueName(n){
+  const names = new Set(PRESETS.map(x => x.name));
+  if (!names.has(n)) return n;
+  for (let i=2;;i++) if (!names.has(`${n} ${i}`)) return `${n} ${i}`;
+}
+function savePreset(name, overwriteId){
+  const o = {...snap(), name, saved: new Date().toISOString()};
+  if (overwriteId){
+    const i = PRESETS.findIndex(x => x.id === overwriteId);
+    o.id = overwriteId; PRESETS[i] = o;
+  } else {
+    o.id = "p" + Date.now().toString(36) + Math.floor(Math.random()*1296).toString(36);
+    PRESETS.push(o);
+  }
+  storePresets();
+  PS.active = o.id;
+  PS.baseline = snap();
+  buildTplSelect();
+  updateDirty();
+}
+
+/* Ask whether to keep the changes as a preset. mode "switch" = the user is
+   leaving this template; resolves "saved" | "skip" | "cancel". */
+function askSave(mode){
+  return new Promise(resolve => {
+    const dlg = $("#presetDlg"), nm = $("#pdName"), btns = $("#pdBtns");
+    const act = PS.active && PRESETS.find(x => x.id === PS.active);
+    const tname = TEMPLATES[state.template].name;
+    $("#pdTitle").textContent = mode === "switch" ? "Save your changes?" : "Save as preset";
+    $("#pdMsg").textContent = (mode === "switch"
+      ? `You changed “${act ? act.name : tname}”. Save these settings as a preset before switching?`
+      : `Saves this template's options, the hidden text / arrows and the canvas, animation and export settings.`)
+      + (act ? "" : " The preset shows up under “My presets” at the top of the template list.");
+    nm.value = act ? act.name : uniqueName(tname.split(" — ")[0] + " (my settings)");
+    btns.innerHTML = "";
+    let finished = false;
+    const finish = r => { if (finished) return; finished = true; resolve(r); };
+    const add = (label, cls, fn) => {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+      if (cls) b.className = cls;
+      b.addEventListener("click", fn); btns.appendChild(b); return b;
+    };
+    const name = () => (nm.value.trim() || tname);
+    const done = r => { if (dlg.open) dlg.close(); finish(r); };
+    if (mode === "switch") add("Don't save", "", () => done("skip"));
+    add("Cancel", "", () => done("cancel"));
+    if (act){
+      add("Save as new", "", () => { savePreset(uniqueName(name()), null); done("saved"); });
+      add(`Update “${act.name}”`, "primary", () => { savePreset(name(), act.id); done("saved"); });
+    } else {
+      add("Save preset", "primary", () => { savePreset(uniqueName(name()), null); done("saved"); });
+    }
+    nm.onkeydown = e => { if (e.key === "Enter"){ e.preventDefault(); btns.lastChild.click(); } };
+    dlg.onkeydown = e => { if (e.key === "Escape"){ e.preventDefault(); done("cancel"); } };
+    dlg.onclose = () => finish("cancel");
+    dlg.showModal();
+    nm.select();
+  });
+}
+
+function updateDirty(){
+  const d = isDirty();
+  $("#dirtyBar").hidden = !d || PS.declined[currentValue()] === sig(snap());
+}
+
 // template selector
 {
   const sel = $("#tplSelect");
-  for (const [id,tpl] of Object.entries(TEMPLATES)){
-    const o = document.createElement("option");
-    o.value = id; o.textContent = tpl.name;
-    sel.appendChild(o);
-  }
-  sel.addEventListener("change", () => {
-    state.template = sel.value;
-    initParams(state.template);
-    const cs = TEMPLATES[state.template].canvas;
-    if (cs){ state.width = cs.w; state.height = cs.h; $("#cw").value = cs.w; $("#ch").value = cs.h; }
-    const an = TEMPLATES[state.template].anim;
-    if (an){
-      state.duration = an.duration; state.fps = an.fps;
-      $("#dur").value = an.duration; $("#durV").textContent = an.duration + " s";
-      $("#fps").value = an.fps; $("#fpsV").textContent = an.fps;
+  sel.addEventListener("change", async () => {
+    const v = sel.value, from = currentValue(), cur = sig(snap());
+    if (v === from) return;
+    if (isDirty() && PS.declined[from] !== cur){
+      sel.value = from;
+      const r = await askSave("switch");
+      if (r === "cancel") return;
+      if (r === "skip") PS.declined[from] = cur;
     }
-    buildParamControls();
-    $("#tplDesc").textContent = TEMPLATES[state.template].desc;
-    elemReset();
+    selectValue(v);
+    buildTplSelect();
+    updateDirty();
+  });
+  $("#presetSave").addEventListener("click", () => askSave("save"));
+  $("#dirtySave").addEventListener("click", () => askSave("save"));
+  $("#dirtyRevert").addEventListener("click", () => {
+    if (PS.baseline){ applySnap(PS.baseline); if (!PS.active) PS.baseline = {...snap(), params: defaultsOf(state.template), hidden: []}; }
+    updateDirty();
+  });
+  $("#presetDel").addEventListener("click", () => {
+    const pr = PRESETS.find(x => x.id === PS.active);
+    if (!pr || !confirm(`Delete the preset “${pr.name}”? This cannot be undone (unless you exported it).`)) return;
+    PRESETS = PRESETS.filter(x => x !== pr);
+    storePresets();
+    const keep = snap();
+    loadBuiltin(pr.base);
+    applySnap(keep);   // keep what is on screen, now as unsaved changes to the template
+    buildTplSelect();
+    updateDirty();
+  });
+  $("#presetExport").addEventListener("click", () => {
+    if (!PRESETS.length){ alert("No presets saved yet."); return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({app:"SciGIF Studio", version:1, presets:PRESETS}, null, 1)], {type:"application/json"}));
+    a.download = "scigif-presets.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+  $("#presetImport").addEventListener("click", () => $("#presetFile").click());
+  $("#presetFile").addEventListener("change", async e => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    try {
+      const j = JSON.parse(await f.text());
+      const list = Array.isArray(j) ? j : j.presets;
+      if (!Array.isArray(list)) throw new Error("no presets in this file");
+      let n = 0;
+      for (const pr of list){
+        if (!pr || !pr.base || !pr.params) continue;
+        const sameSig = PRESETS.some(x => x.name === pr.name && sig(x) === sig(pr));
+        if (sameSig) continue;
+        const o = {...pr, id: PRESETS.some(x => x.id === pr.id) || !pr.id ? "p" + Date.now().toString(36) + n : pr.id,
+                   name: uniqueName(pr.name || pr.base)};
+        PRESETS.push(o); n++;
+      }
+      storePresets(); buildTplSelect();
+      alert(`Imported ${n} preset${n === 1 ? "" : "s"}.`);
+    } catch (err){ alert("Import failed: " + err.message); }
+  });
+  for (const ev of ["input","change","click"])
+    $("#sidebar").addEventListener(ev, () => setTimeout(updateDirty), true);
+  setInterval(updateDirty, 800);
+  window.addEventListener("beforeunload", e => {
+    if (isDirty() && PS.declined[currentValue()] !== sig(snap())){ e.preventDefault(); e.returnValue = ""; }
   });
 }
-initParams(state.template);
-buildParamControls();
-$("#tplDesc").textContent = TEMPLATES[state.template].desc;
+
+// draggable sidebar width
+{
+  const KEY = "scigif.sidebarWidth", DEF = 330;
+  const rz = $("#resizer");
+  const setW = w => {
+    w = Math.round(clamp(w, 240, Math.max(260, window.innerWidth*0.75)));
+    document.body.style.setProperty("--sbw", w + "px");
+    return w;
+  };
+  try { const w = parseInt(localStorage.getItem(KEY)); if (w) setW(w); } catch (e){}
+  let x0 = 0, w0 = 0;
+  const move = e => setW(w0 + e.clientX - x0);
+  const up = e => {
+    rz.classList.remove("drag"); document.body.classList.remove("resizing");
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    try { localStorage.setItem(KEY, Math.round($("#sidebar").getBoundingClientRect().width)); } catch (err){}
+  };
+  rz.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    x0 = e.clientX; w0 = $("#sidebar").getBoundingClientRect().width;
+    rz.classList.add("drag"); document.body.classList.add("resizing");
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  });
+  rz.addEventListener("dblclick", () => { setW(DEF); try { localStorage.removeItem(KEY); } catch (e){} });
+  window.addEventListener("resize", () => setW($("#sidebar").getBoundingClientRect().width));
+}
 
 // global controls
 $("#cw").addEventListener("input", e => { state.width  = clamp(parseInt(e.target.value)||800, 200, 1600); });
@@ -4111,7 +4406,8 @@ $("#showText").addEventListener("input", e => { ELEM.hideText = !e.target.checke
 $("#showArrows").addEventListener("input", e => { ELEM.hideArrows = !e.target.checked; });
 $("#elemAll").addEventListener("click", () => { ELEM.hidden.clear(); elemBuildList(); });
 $("#elemNone").addEventListener("click", () => { for (const k of ELEM.seen.keys()) ELEM.hidden.add(k); elemBuildList(); });
-elemReset();
+loadBuiltin(state.template);
+buildTplSelect();
 
 /* ============================ render loop ============================ */
 function render(ctx,t,W,H){

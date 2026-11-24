@@ -40,7 +40,7 @@ python -m http.server 8321 --directory .   # run from the repo folder
 
 ## Usage
 
-1. Pick a template and tweak its colors, labels, and parameters in the sidebar.
+1. Pick a template (A–Z) or one of your presets, then tweak its colors, labels, and parameters in the sidebar.
 2. Set canvas size, optional title, duration, and frame rate.
 3. Click **Export GIF** — the file downloads immediately and loops forever.
 4. **Save current frame as PNG** grabs a still for figures.
@@ -68,6 +68,29 @@ groups off. Hovering a list entry outlines that element in magenta in the previe
 (the outline never appears in exports). Labels are matched by their text, arrows by
 the line of template code that draws them, so one entry may cover a family of arrows
 drawn in a loop.
+
+### Saving your settings as presets
+
+The template list is sorted A–Z. Your own presets sit above it, under **My presets** (marked ★).
+
+Once you change anything (template options, hidden text or arrows, canvas, animation or
+transparency), a yellow bar asks whether to save the settings as a preset. Switching to
+another template with unsaved changes asks the same question:
+
+- **Save preset** adds the settings to **My presets** under a name you choose.
+- **Update “…”** overwrites the preset you started from. **Save as new** keeps that preset and adds a new one.
+- **Don't save** keeps the changes for this session but does not store them. You are only asked again
+  if you change something else.
+- **Revert** goes back to the template defaults, or to the preset as it was saved.
+
+Presets are stored in this browser (`localStorage`). Use **Export presets / Import presets…** to keep
+them in a `.json` file or to move them to another computer. Hidden arrows are stored by the code
+line that draws them, so after an update to `index.html` a preset may show an arrow it used to hide.
+
+### Panel width
+
+Drag the line between the sidebar and the preview to make the panel wider or narrower. The width is
+remembered. Double-click the line to go back to the default width.
 
 All animations are built from integer-frequency motion, so every exported GIF
 loops seamlessly. Exports use a built-in GIF89a encoder (LZW compression, one global
