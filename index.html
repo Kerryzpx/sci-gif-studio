@@ -612,6 +612,9 @@ function drawMembrane(ctx,t,P,W,H){
 
 function drawCrumpled(ctx,t,P,W,H){
   const s = W/800;
+  // molecule size; the gallery heights and the holes are keyed to it, as in the
+  // lamellar template, so a bigger gas B is still held back and gas A still fits
+  const sm = s*(P.molSize ?? 100)/100;
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
   const hA = Math.max(...gA.atoms.map(a => Math.abs(a.dy)+a.r));
   const hB = Math.max(...gB.atoms.map(a => Math.abs(a.dy)+a.r));
@@ -619,19 +622,21 @@ function drawCrumpled(ctx,t,P,W,H){
   // domains at the troughs and expanded (fast-uptake) pockets at the crests
   const mx0 = W*0.12, mx1 = W*0.88, L = mx1-mx0;
   const nCr = P.crumples, nL = 4;
-  const myC = H*0.58, Aw = 9*s;
-  const gapX = (2*hB+9)*s;
-  const gapC = Math.max(2*hA+1, Math.min(2*hA+2.5, 2*hB-1.5))*s;
+  const gapX = (2*hB+9)*sm;
+  const gapC = Math.max(2*hA+1, Math.min(2*hA+2.5, 2*hB-1.5))*sm;
+  // a thicker laminate (bigger molecules) grows upward into the feed, so its
+  // underside and the captions below it stay where they are
+  const myC = H*0.58 - (nL-1)/2*Math.max(0, gapX - (2*hB+9)*s), Aw = 9*s;
   const phase = x => 2*Math.PI*nCr*(x-mx0)/L - Math.PI;
   const gap = x => gapC + (gapX-gapC)*(0.5+0.5*Math.cos(phase(x)));
   const yMid = x => myC - Aw*Math.cos(phase(x));
   const sheetY = (k,x) => yMid(x) + (k-(nL-1)/2)*gap(x);
   const crest = j => mx0 + L*(j+0.5)/nCr;
   const troughs = []; for (let j=1;j<nCr;j++) troughs.push(mx0 + L*j/nCr);
-  const feedY0 = H*0.17, feedY1 = myC - Aw - (nL-1)/2*gapX - 14*s;
+  const feedY0 = H*0.17, feedY1 = Math.max(feedY0 + 30*s, myC - Aw - (nL-1)/2*gapX - 14*s);
   const permY1 = H*0.86, xIn = W*0.02, xOut = W*0.98;
   // wide uptake holes into the pockets (top two sheets), narrow sieve holes at the troughs
-  const we = (gB.w+8)*s, ws = (gA.w+4)*s;
+  const we = (gB.w+8)*sm, ws = (gA.w+4)*sm;
   const inHole = (k,x) => {
     if (k < 2){ for (let j=0;j<nCr;j++) if (Math.abs(x-crest(j)) < we/2) return true; }
     else { for (const tx of troughs) if (Math.abs(x-tx) < ws/2) return true; }
@@ -693,13 +698,13 @@ function drawCrumpled(ctx,t,P,W,H){
     const q = i*5+11;
     const u = (rnd(q) + t*P.speed) % 1;
     const p = rnd(q+6)*100 < P.permA ? permeatePath(q,u) : acrossPath(q,u,0);
-    drawGasMol(ctx, gA, p[0], p[1], s, p[2]);
+    drawGasMol(ctx, gA, p[0], p[1], sm, p[2]);
   }
   for (let i=0;i<P.nB;i++){
     const q = i*9+51;
     const u = (rnd(q) + t*P.speed) % 1;
-    const p = rnd(q+6)*100 < P.permB ? permeatePath(q,u) : acrossPath(q,u,(hB+3)*s);
-    drawGasMol(ctx, gB, p[0], p[1], s, p[2]);
+    const p = rnd(q+6)*100 < P.permB ? permeatePath(q,u) : acrossPath(q,u,(hB+3)*sm);
+    drawGasMol(ctx, gB, p[0], p[1], sm, p[2]);
   }
   // labels + flow arrows ("auto" composes from the selected gases)
   const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
@@ -712,14 +717,19 @@ function drawCrumpled(ctx,t,P,W,H){
   arrow(ctx, W*0.83, ay, W*0.95, ay, gB.tint, 3*s, 8*s);
   arrow(ctx, W*0.5, H*0.885, W*0.5, H*0.945, gA.tint, 3*s, 8*s);
   text(ctx, permLabel, W*0.5+16*s, H*0.915, {size:15*s, bold:true, color:gA.tint, align:"left"});
-  // domain + membrane callouts
+  // domain + membrane callouts; a leader line is drawn only with its label, so
+  // hiding the label (or all text, as in the map insets) takes the line with it
   ctx.strokeStyle = "#64748b"; ctx.lineWidth = 1.5*s;
-  ctx.beginPath(); ctx.moveTo(crest(0), sheetY(nL-1,crest(0))+4*s); ctx.lineTo(W*0.145, H*0.755); ctx.stroke();
+  const leader = (str, x0, y0, x1, y1) => {
+    if (P.showLeaders === false || !str || !textVisible(str)) return;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  };
+  leader(P.expLabel, crest(0), sheetY(nL-1,crest(0))+4*s, W*0.145, H*0.755);
   text(ctx, P.expLabel, W*0.03, H*0.79, {size:12.5*s, color:"#334155", align:"left"});
   const lastTr = troughs[troughs.length-1];
-  ctx.beginPath(); ctx.moveTo(lastTr+ws/2+4*s, sheetY(nL-1,lastTr)+4*s); ctx.lineTo(W*0.80, H*0.755); ctx.stroke();
+  leader(P.selLabel, lastTr+ws/2+4*s, sheetY(nL-1,lastTr)+4*s, W*0.80, H*0.755);
   text(ctx, P.selLabel, W*0.975, H*0.79, {size:12.5*s, color:"#334155", align:"right"});
-  ctx.beginPath(); ctx.moveTo(mx1-2*s, yMid(mx1)); ctx.lineTo(W*0.93, H*0.62); ctx.stroke();
+  leader(P.membLabel, mx1-2*s, yMid(mx1), W*0.93, H*0.62);
   text(ctx, P.membLabel, W*0.975, H*0.65, {size:13*s, color:"#334155", align:"right"});
 }
 
@@ -877,7 +887,7 @@ function drawLamellar(ctx,t,P,W,H){
   const yL  = fy1 + 24*kX;                            // the L dimension sits between feed and membrane
   const mY  = P.showDims ? yL + 13*kX : fy1 + 14;
   const mY1 = mY + memH;
-  const sY  = mY1 + 10, sY1 = sY + st;
+  const sY  = mY1 + 10*kD, sY1 = sY + st;              // support gap follows the interlayer d
   const yExit = sY1 + 26;                             // permeate fades out here, clear of the caption
   const yPerm = yExit + 16*kX, yTag = yPerm + 20*kX;
   const VH = (P.showVerdict ? yTag : yPerm) + 14*kX;
@@ -2446,7 +2456,7 @@ function drawMemb3D(ctx,t,P,W,H){
 function drawGOCSLayers(ctx,t,P,W,H){
   const kk = k => P[k]/100;
   const kL = kk("flakeLen"), kD = kk("interlayer"), kM = kk("molSize"), kX = kk("textSize"),
-        kC = kk("chainLen");
+        kC = kk("chainLen"), kT = kk("flakeThick"), kW = kk("membWidth"), kS = kk("supSize");
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
   const v = parseFloat(P.speed), m = flowM(v);
   const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
@@ -2455,15 +2465,20 @@ function drawGOCSLayers(ctx,t,P,W,H){
   const rejLabel = P.rejLabel === "auto" ? gB.label+" barely sorbs" : P.rejLabel;
 
   /* ---- layout (design units; 1 unit = 1 px at 860 wide) ---- */
-  const nL = P.layers, ft = 10, g = 50*kD;
+  const nL = P.layers, ft = 10*kT, g = 50*kD;
   const bl = Math.min(0.36*g, 20)*kC;                 // chitosan chain length
-  const mX0 = 74, mX1 = 786, VW = 860;
+  // the view widens or narrows with the membrane, but never below what the
+  // legend line underneath needs
+  ctx.font = `400 ${13*kX}px "Segoe UI", Arial, sans-serif`;
+  const wLeg = 26 + ctx.measureText(oxLabel).width + 40 + 26 + ctx.measureText(P.grLabel).width;
+  const MW = 712*kW, VW = Math.max(MW + 148, wLeg + 40, 480);
+  const mX0 = (VW - MW)/2, mX1 = mX0 + MW;          // centred under the legend
   const yT = P.title ? 34*kX : 0;
-  const zF0 = yT + 8, zF1 = zF0 + 92;
+  const zF0 = yT + 8, zF1 = zF0 + 104;
   const yM = zF1 + bl + 12;
   const rowY = r => yM + r*(ft+g);
   const yLast = rowY(nL-1) + ft;
-  const yS = yLast + bl + 14, sH = P.showSupport ? 16 : 0;
+  const yS = yLast + bl + 14, sH = P.showSupport ? 16*kS : 0;
   const zP0 = yS + sH + 10, zP1 = zP0 + 58;
   const yLeg = zP1 + 22*kX;
   const VH = yLeg + 16*kX;
@@ -2525,14 +2540,23 @@ function drawGOCSLayers(ctx,t,P,W,H){
   // level L = the gap above row L+1 (L=-1: the feed face, L=nL-1: under the last row)
   const levelChains = L => chains.filter(c => (c.r === L && c.dir > 0) || (c.r === L+1 && c.dir < 0));
   const levelY = L => L < 0 ? rowY(0) - bl - 8*kM : L >= nL-1 ? (yLast + yS)/2 : (rowY(L)+ft + rowY(L+1))/2;
-  const nSup = 5, supX = [], spw = 34;
+  const nSup = Math.max(2, Math.round((mX1 - mX0)/142)), supX = [], spw = 34;
   for (let i=0;i<nSup;i++) supX.push(mX0 + (mX1-mX0)*(i+0.5)/nSup);
+
+  // the feed is a stream running left to right above the membrane, as in the
+  // lamellar template: molecules fade in at the left end of the feed box and out
+  // at the right end, in a band clear of the captions and the molecule key
+  const xIn = mX0 - 20, xOut = mX1 + 20;
+  const fY0 = zF0 + 36*kX, fY1 = Math.max(fY0 + 1, zF1 - 32*kX);
+  const edgeFade = x => clamp((x - xIn)/36, 0, 1)*clamp((xOut - x)/36, 0, 1);
 
   /* ---- route of permeating molecule q: nodes with dwell times ---- */
   const DW = 10*P.dwell;
   const route = q => {
     let x = mX0 + 40 + rnd(q)*(mX1 - mX0 - 80);
-    const nodes = [{x, y: zF0 + 24 + rnd(q+1)*36, dw:0, fast:true}];
+    const yF = zF0 + 32 + rnd(q+1)*Math.max(1, zF1 - zF0 - 60);
+    // carried in from the left by the feed stream, then drops onto the membrane
+    const nodes = [{x:xIn, y:yF, dw:0}, {x, y:yF, dw:0, fast:true}];
     for (let L=-1; L<nL; L++){
       let tx;
       if (L < nL-1){
@@ -2572,7 +2596,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
     for (let i=0;i<nodes.length;i++){
       if (i){
         const a = nodes[i-1], b = nodes[i];
-        const d = Math.hypot(b.x-a.x, b.y-a.y), dt = d*(b.fast || i === 1 ? 0.5 : 1);
+        const d = Math.hypot(b.x-a.x, b.y-a.y), dt = d*(b.fast || i <= 2 ? 0.5 : 1);
         seg.push({a, b, t0:T, t1:T+dt}); T += dt;
       }
       if (nodes[i].dw){ seg.push({a:nodes[i], b:nodes[i], t0:T, t1:T+nodes[i].dw, hold:nodes[i].site}); T += nodes[i].dw; }
@@ -2595,6 +2619,11 @@ function drawGOCSLayers(ctx,t,P,W,H){
     ctx.beginPath(); ctx.roundRect ? ctx.roundRect(mX0-20, zP0, mX1-mX0+40, zP1-zP0, 10) : ctx.rect(mX0-20, zP0, mX1-mX0+40, zP1-zP0); ctx.fill();
   }
   text(ctx, feedLabel, mX0-8, zF0 + 15*kX, {size:15*kX, bold:true, color:"#1e3a8a", align:"left"});
+  {                                                    // flow direction of the feed stream
+    ctx.font = `700 ${15*kX}px "Segoe UI", Arial, sans-serif`;
+    const ax = mX0 - 8 + ctx.measureText(feedLabel).width + 12;
+    arrow(ctx, ax, zF0 + 15*kX, ax + 56, zF0 + 15*kX, "#1e3a8a", 2.6, 8);
+  }
   text(ctx, permLabel, mX0-8, zP1 - 14*kX, {size:15*kX, bold:true, color:"#15803d", align:"left"});
   text(ctx, rejLabel, mX1+8, zF1 - 13*kX, {size:13*kX, bold:true, color:gB.tint, align:"right"});
   // molecule key, top right of the feed
@@ -2611,7 +2640,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
   if (P.showPath){
     const rt = route(11);
     ctx.save(); ctx.setLineDash([6,5]); ctx.globalAlpha = 0.75;
-    strokePath(ctx, rt.nodes.slice(1).map(n => [n.x, n.y]), P.pathColor, 1.8);
+    strokePath(ctx, rt.nodes.slice(2).map(n => [n.x, n.y]), P.pathColor, 1.8);
     ctx.restore();
   }
 
@@ -2623,7 +2652,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
       ctx.fillStyle = d.ox ? shade(P.oxColor, ((r + Math.round(d.a)) % 3)*8 - 6) : P.grColor;
       ctx.beginPath();
       const rr = 3;
-      if (ctx.roundRect) ctx.roundRect(a, y, b-a, ft, [d.first ? rr : 0, d.last ? rr : 0, d.last ? rr : 0, d.first ? rr : 0]);
+      if (ctx.roundRect) ctx.roundRect(a, y, b-a, ft, [d.first ? rr : 0, d.last ? rr : 0, d.last ? rr : 0, d.first ? rr : 0].map(z => Math.min(z, ft/2)));
       else ctx.rect(a, y, b-a, ft);
       ctx.fill();
       if (!d.ox) zigLine(ctx, a+3, b-3, y + ft/2, ft*0.22, Math.max(2, Math.round((b-a)/5)), "rgba(226,232,240,0.55)", 1);
@@ -2637,7 +2666,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
     ctx.fillStyle = P.supColor;
     for (let k=0;k<e.length;k+=2){
       if (e[k+1] - e[k] < 1) continue;
-      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(e[k], yS, e[k+1]-e[k], sH, 3) : ctx.rect(e[k], yS, e[k+1]-e[k], sH); ctx.fill();
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(e[k], yS, e[k+1]-e[k], sH, Math.min(3, sH/3)) : ctx.rect(e[k], yS, e[k+1]-e[k], sH); ctx.fill();
     }
     text(ctx, P.supLabel, mX1 + 8, yS + sH/2, {size:12*kX, color:"#475569", align:"left"});
   }
@@ -2658,25 +2687,30 @@ function drawGOCSLayers(ctx,t,P,W,H){
     ctx.beginPath(); ctx.arc(tx, ty, 3, 0, TAU); ctx.fill();
   }
 
-  /* ---- ambient feed ---- */
-  for (let i=0;i<P.feedMols;i++){
-    const gg = i % 3 === 2 ? gA : gB;
-    const bx = mX0 + 30 + rnd(i*7+301)*(mX1 - mX0 - 60), by = zF0 + 34 + rnd(i*7+302)*(zF1 - zF0 - 50);
-    const ph = rnd(i*7+303)*TAU;
-    drawGasMol(ctx, gg, bx + 7*Math.sin(TAU*t + ph), by + 4*Math.cos(TAU*2*t + ph), kM, ph + TAU*t*(i%2 ? 1 : -1));
+  /* ---- feed stream: molecules carried across, left to right ---- */
+  for (let i=0;i<flowCount(P.feedMols, v);i++){
+    const g0 = Math.floor(i/m), q = g0*7 + 301;
+    const gg = g0 % 3 === 2 ? gA : gB;
+    const u = flowPhase(rnd(q), i, v, t);
+    const ph = rnd(q+3)*TAU;
+    const x = xIn + u*(xOut - xIn), y = fY0 + rnd(q+2)*(fY1 - fY0) + 4*Math.sin(TAU*(1 + g0 % 2)*t + ph);
+    ctx.globalAlpha = edgeFade(x);
+    drawGasMol(ctx, gg, x, y, kM, ph + TAU*t*(g0 % 2 ? 1 : -1));
+    ctx.globalAlpha = 1;
   }
 
-  /* ---- gas B: comes down, touches the outer brush, turned back ---- */
-  for (let i=0;i<P.nB;i++){
-    const q = i*9 + 501;
-    const u = (rnd(q) + t) % 1;
-    const x0 = mX0 + 50 + rnd(q+1)*(mX1 - mX0 - 100), dx = (rnd(q+2) - 0.5)*120;
-    const yc = rowY(0) - bl - 7*kM, y0 = zF0 + 30;
-    let x, y, al = 1;
-    if (u < 0.42){ const w = smooth(u/0.42); x = x0 + dx*0.3*w; y = lerp(y0, yc, w); al = clamp(u/0.08, 0, 1); }
-    else if (u < 0.54){ const w = (u - 0.42)/0.12; x = x0 + dx*0.3 + 2*Math.sin(w*TAU*2); y = yc - 2*Math.abs(Math.sin(w*TAU*1.5)); }
-    else { const w = (u - 0.54)/0.46; x = x0 + dx*(0.3 + 0.7*smooth(w)); y = lerp(yc, y0 - 6, smooth(w)); al = 1 - w*w; }
-    ctx.globalAlpha = al;
+  /* ---- gas B: swept along the feed, dips onto the outer brush, carried on ---- */
+  for (let i=0;i<flowCount(P.nB, v);i++){
+    const q = Math.floor(i/m)*9 + 501;
+    const u = flowPhase(rnd(q), i, v, t);
+    const x = xIn + u*(xOut - xIn);
+    const yBase = fY0 + rnd(q+1)*(fY1 - fY0), yc = rowY(0) - bl - 7*kM;
+    const tryX = mX0 + (0.12 + 0.6*rnd(q+2))*(mX1 - mX0), sig = VW*0.055;   // clear of the caption at right
+    const bump = Math.exp(-((x - tryX)**2)/(2*sig*sig));
+    let y = yBase + (yc - yBase)*bump;
+    y += (1 - bump)*4*Math.sin(TAU*(1 + Math.floor(rnd(q+4)*2))*t + rnd(q+5)*TAU);
+    y -= bump > 0.8 ? 2*Math.abs(Math.sin(TAU*14*t + q)) : 0;   // rattles on the brush, does not sorb
+    ctx.globalAlpha = edgeFade(x);
     drawGasMol(ctx, gB, x, y, kM, rnd(q+3)*TAU + TAU*t);
     ctx.globalAlpha = 1;
   }
@@ -2689,7 +2723,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
     const rt = routes.get(q);
     const u = flowPhase(rnd(q+4), i, v, t);
     const p = where(rt, u);
-    const al = Math.min(1, u/0.03, (1-u)/0.05);
+    const al = Math.min(1, (1-u)/0.05, p.y < zF1 ? edgeFade(p.x) : 1);
     ctx.globalAlpha = clamp(al, 0, 1);
     if (p.hold && P.showHB){                           // hydrogen bond to the chitosan tip
       const [hx, hy] = tip(p.hold);
@@ -2702,9 +2736,9 @@ function drawGOCSLayers(ctx,t,P,W,H){
   }
 
   /* ---- driving force + laminate bracket + legend ---- */
-  arrow(ctx, 36, zF1 - 4, 36, yS + sH, "#0284c7", 3, 10);
+  arrow(ctx, mX0 - 38, zF1 - 4, mX0 - 38, yS + sH, "#0284c7", 3, 10);
   {
-    ctx.save(); ctx.translate(22, (zF1 + yS)/2); ctx.rotate(-Math.PI/2);
+    ctx.save(); ctx.translate(mX0 - 52, (zF1 + yS)/2); ctx.rotate(-Math.PI/2);
     text(ctx, P.dpLabel, 0, 0, {size:14*kX, bold:true, color:"#0284c7"});
     ctx.restore();
   }
@@ -3494,9 +3528,12 @@ const TEMPLATES = {
       {key:"feedMols",  label:"Idle feed molecules",  type:"range", min:0, max:20, step:1, def:6},
       {key:"speed",     label:"Flow speed",           type:"select", def:"0.333", options:SLOW_SPEEDS},
       {key:"dwell",     label:"Sorption stop ×",      type:"range", min:0, max:6, step:0.5, def:2.5},
-      {key:"layers",    label:"GO layers",            type:"range", min:2, max:6, step:1, def:4},
-      {key:"flakeLen",  label:"Flake length %",       type:"range", min:50, max:200, step:5, def:100},
-      {key:"interlayer",label:"Gallery height %",     type:"range", min:60, max:180, step:5, def:100},
+      {key:"layers",    label:"Flake layers",         type:"range", min:2, max:9, step:1, def:4},
+      {key:"flakeLen",  label:"Flake length L %",     type:"range", min:50, max:200, step:5, def:100},
+      {key:"interlayer",label:"Interlayer d %",       type:"range", min:60, max:220, step:5, def:100},
+      {key:"flakeThick",label:"Flake thickness %",    type:"range", min:50, max:200, step:5, def:100},
+      {key:"membWidth", label:"Membrane width %",     type:"range", min:60, max:130, step:5, def:100},
+      {key:"supSize",   label:"Support thickness %",  type:"range", min:50, max:200, step:5, def:100},
       {key:"oxFrac",    label:"Oxidized area %",      type:"range", min:0, max:100, step:5, def:60},
       {key:"density",   label:"Chitosan density",     type:"range", min:0.5, max:4, step:0.5, def:2},
       {key:"chainLen",  label:"Chitosan length %",    type:"range", min:50, max:140, step:5, def:100},
@@ -3721,6 +3758,8 @@ const TEMPLATES = {
       {key:"nA",            label:"Gas A molecules",     type:"range", min:4, max:30, step:1, def:14},
       {key:"nB",            label:"Gas B molecules",     type:"range", min:2, max:15, step:1, def:8},
       {key:"speed",         label:"Flow speed",          type:"range", min:1, max:3, step:1, def:1},
+      {key:"molSize",       label:"Molecule size %",     type:"range", min:50, max:250, step:5, def:100},
+      {key:"showLeaders",   label:"Label leader lines",  type:"checkbox", def:true},
       {key:"feedLabel",     label:"Feed label",          type:"text",  def:"auto"},
       {key:"retLabel",      label:"Retentate label",     type:"text",  def:"auto"},
       {key:"permLabel",     label:"Permeate label",      type:"text",  def:"auto"},
