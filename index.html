@@ -167,7 +167,7 @@ function shade(hex,amt){ const c = hex2rgb(hex); return `rgb(${c.map(v=>clamp(v+
 const ELEM = {hideText:false, hideArrows:false, hidden:new Set(), seen:new Map(),
               hl:null, live:false, mute:0, dirty:false, nArrow:0};
 const ELEM_SKIP = new Set(["elem","callSite","arrowKey","text","arrow","arrowRaw","vArrow2","fatArrow",
-                           "arcArrow","m3BlockArrow","m3PressureArrow","Error"]);
+                           "arcArrow","m3BlockArrow","m3PressureArrow","hollowArrow","Error"]);
 function callSite(){
   for (const ln of (new Error().stack || "").split("\n")){
     const m = ln.match(/^\s*(?:at\s+(?:new\s+|async\s+)?([^\s(]+)\s+\(|at\s+|([^@\s]*)@)?.*?:(\d+):(\d+)\)?\s*$/);
@@ -2460,13 +2460,18 @@ function drawGOCSLayers(ctx,t,P,W,H){
   const gA = GASES[P.gasA], gB = GASES[P.gasB];
   const v = parseFloat(P.speed), m = flowM(v);
   const feedLabel = P.feedLabel === "auto" ? gA.label+" + "+gB.label+" feed" : P.feedLabel;
-  const permLabel = P.permLabel === "auto" ? gA.label+" permeate" : P.permLabel;
-  const oxLabel = P.oxLabel === "auto" ? "oxidized GO + chitosan: sorbs "+gA.label : P.oxLabel;
-  const rejLabel = P.rejLabel === "auto" ? gB.label+" barely sorbs" : P.rejLabel;
+  const permLabel = P.permLabel !== "auto" ? P.permLabel :
+        P.spacerMode ? gA.label+" + "+gB.label+" permeate" : gA.label+" permeate";
+  // spacer mode (template goSpacer): inert spacers prop the galleries open, no chitosan,
+  // no sorption stops, and gas B permeates too
+  const SP = !!P.spacerMode;
+  const oxLabel = P.oxLabel !== "auto" ? P.oxLabel :
+        SP ? "GO + inert spacer: wider d, no sorption sites" : "oxidized GO + chitosan: sorbs "+gA.label;
+  const rejLabel = P.rejLabel !== "auto" ? P.rejLabel : SP ? "both pass: D ↑, S unchanged" : gB.label+" barely sorbs";
 
   /* ---- layout (design units; 1 unit = 1 px at 860 wide) ---- */
   const nL = P.layers, ft = 10*kT, g = 50*kD;
-  const bl = Math.min(0.36*g, 20)*kC;                 // chitosan chain length
+  const bl = SP ? 10 : Math.min(0.36*g, 20)*kC;        // chitosan chain length
   // the view widens or narrows with the membrane, but never below what the
   // legend line underneath needs
   ctx.font = `400 ${13*kX}px "Segoe UI", Arial, sans-serif`;
@@ -2517,7 +2522,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
   }
   // chitosan chains on both faces of every oxidized domain
   const chains = [];                                   // {x, y0, dir, len, ph, r}
-  for (let r=0;r<nL;r++){
+  for (let r=0;r<(SP ? 0 : nL);r++){
     for (const d of domains[r]){
       if (!d.ox) continue;
       const len = d.b - d.a, n = Math.max(1, Math.round(len/(46/P.density)));
@@ -2542,6 +2547,28 @@ function drawGOCSLayers(ctx,t,P,W,H){
   const levelY = L => L < 0 ? rowY(0) - bl - 8*kM : L >= nL-1 ? (yLast + yS)/2 : (rowY(L)+ft + rowY(L+1))/2;
   const nSup = Math.max(2, Math.round((mX1 - mX0)/142)), supX = [], spw = 34;
   for (let i=0;i<nSup;i++) supX.push(mX0 + (mX1-mX0)*(i+0.5)/nSup);
+  // spacer mode: spheres wedged in each gallery, under a flake and over a flake (never at a slit)
+  const spacers = [];
+  if (SP){
+    // round spacers wedged between two flakes (diameter = gallery height at 100 %),
+    // placed in the free stretches between slits
+    const rx = g/2*P.spSize/100, step = 150/P.spDensity, keep = slitW/2 + rx + 4;
+    for (let L=0; L<nL-1; L++){
+      const ed = [mX0 - slitW/2 + 6, ...slits[L], ...slits[L+1], mX1 + slitW/2 - 6].sort((a,b) => a - b);
+      for (let k=1;k<ed.length;k++){
+        const a = ed[k-1] + keep, b = ed[k] - keep;
+        if (b < a) continue;
+        // short stretches get a spacer only some of the time, so density reads as density
+        const n = Math.round((b - a)/step);
+        if (!n && rnd(L*37 + k*19 + 3) > 0.45*P.spDensity) continue;
+        for (let j=0;j<Math.max(1, n);j++){
+          const x = n <= 1 ?(a + b)/2 + (rnd(L*71 + k*13) - 0.5)*Math.min(b - a, 20)
+                            : a + (b - a)*j/(n - 1);
+          spacers.push({x, y:(rowY(L) + ft + rowY(L+1))/2, rx, ry:rx});
+        }
+      }
+    }
+  }
 
   // the feed is a stream running left to right above the membrane, as in the
   // lamellar template: molecules fade in at the left end of the feed box and out
@@ -2625,7 +2652,7 @@ function drawGOCSLayers(ctx,t,P,W,H){
     arrow(ctx, ax, zF0 + 15*kX, ax + 56, zF0 + 15*kX, "#1e3a8a", 2.6, 8);
   }
   text(ctx, permLabel, mX0-8, zP1 - 14*kX, {size:15*kX, bold:true, color:"#15803d", align:"left"});
-  text(ctx, rejLabel, mX1+8, zF1 - 13*kX, {size:13*kX, bold:true, color:gB.tint, align:"right"});
+  text(ctx, rejLabel, mX1+8, zF1 - 13*kX, {size:13*kX, bold:true, color:SP ? "#334155" : gB.tint, align:"right"});
   // molecule key, top right of the feed
   if (P.showKey){
     const kx = mX1 - 150, ky = zF0 + 16*kX;
@@ -2647,15 +2674,25 @@ function drawGOCSLayers(ctx,t,P,W,H){
   /* ---- laminate ---- */
   for (let r=0;r<nL;r++){
     const y = rowY(r);
+    let fa = 0;
     for (const d of domains[r]){
+      if (SP){                                         // spacer mode: each flake drawn whole, no domain seams
+        if (d.first) fa = d.a;
+        if (!d.last) continue;
+        ctx.fillStyle = P.oxColor; ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(fa, y, d.b - fa, ft, Math.min(3, ft/2)); else ctx.rect(fa, y, d.b - fa, ft);
+        ctx.fill();
+        continue;
+      }
       const a = d.a + (d.first ? 0 : -0.5), b = d.b;
-      ctx.fillStyle = d.ox ? shade(P.oxColor, ((r + Math.round(d.a)) % 3)*8 - 6) : P.grColor;
+      // spacer mode: plain GO flakes, one colour, no oxidized/graphitic patchwork
+      ctx.fillStyle = SP ? P.oxColor : d.ox ? shade(P.oxColor, ((r + Math.round(d.a)) % 3)*8 - 6) : P.grColor;
       ctx.beginPath();
       const rr = 3;
       if (ctx.roundRect) ctx.roundRect(a, y, b-a, ft, [d.first ? rr : 0, d.last ? rr : 0, d.last ? rr : 0, d.first ? rr : 0].map(z => Math.min(z, ft/2)));
       else ctx.rect(a, y, b-a, ft);
       ctx.fill();
-      if (!d.ox) zigLine(ctx, a+3, b-3, y + ft/2, ft*0.22, Math.max(2, Math.round((b-a)/5)), "rgba(226,232,240,0.55)", 1);
+      if (!d.ox && !SP) zigLine(ctx, a+3, b-3, y + ft/2, ft*0.22, Math.max(2, Math.round((b-a)/5)), "rgba(226,232,240,0.55)", 1);
     }
   }
   // support
@@ -2686,6 +2723,21 @@ function drawGOCSLayers(ctx,t,P,W,H){
     ctx.fillStyle = P.csTip;
     ctx.beginPath(); ctx.arc(tx, ty, 3, 0, TAU); ctx.fill();
   }
+  const spacerBall = (x, y, rx, ry) => {
+    const rr = Math.max(rx, ry);
+    const gr = ctx.createRadialGradient(x - rx*0.35, y - ry*0.35, rr*0.05, x, y, rr);
+    gr.addColorStop(0, mixColor(P.spColor, "#ffffff", 0.65)); gr.addColorStop(0.75, P.spColor);
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = mixColor(P.spColor, "#0f172a", 0.35); ctx.lineWidth = 1; ctx.stroke();
+  };
+  for (const s of spacers) spacerBall(s.x, s.y, s.rx, s.ry);
+  // gallery height marker: the spacer props d open
+  if (SP && P.showD && nL > 1){
+    const ax = mX0 - 14, a0 = rowY(0) + ft, a1 = rowY(1), am = (a0 + a1)/2;
+    arrow(ctx, ax, am, ax, a0, "#334155", 1.8, 6);
+    arrow(ctx, ax, am, ax, a1, "#334155", 1.8, 6);
+    text(ctx, P.dLabel, ax - 6, am, {size:15*kX, bold:true, italic:true, color:"#334155", align:"right"});
+  }
 
   /* ---- feed stream: molecules carried across, left to right ---- */
   for (let i=0;i<flowCount(P.feedMols, v);i++){
@@ -2702,6 +2754,13 @@ function drawGOCSLayers(ctx,t,P,W,H){
   /* ---- gas B: swept along the feed, dips onto the outer brush, carried on ---- */
   for (let i=0;i<flowCount(P.nB, v);i++){
     const q = Math.floor(i/m)*9 + 501;
+    if (SP && rnd(q+7)*100 < P.permB){                // spacer mode: gas B takes the same wide galleries
+      const rt = route(q), u = flowPhase(rnd(q+4), i, v, t), p = where(rt, u);
+      ctx.globalAlpha = clamp(Math.min(1, (1-u)/0.05, p.y < zF1 ? edgeFade(p.x) : 1), 0, 1);
+      drawGasMol(ctx, gB, p.x, p.y, kM, rnd(q+5)*TAU + TAU*2*t);
+      ctx.globalAlpha = 1;
+      continue;
+    }
     const u = flowPhase(rnd(q), i, v, t);
     const x = xIn + u*(xOut - xIn);
     const yBase = fY0 + rnd(q+1)*(fY1 - fY0), yc = rowY(0) - bl - 7*kM;
@@ -2753,12 +2812,13 @@ function drawGOCSLayers(ctx,t,P,W,H){
   {
     ctx.font = `400 ${13*kX}px "Segoe UI", Arial, sans-serif`;
     const w1 = ctx.measureText(oxLabel).width, w2 = ctx.measureText(P.grLabel).width;
-    const tot = 26 + w1 + 40 + 26 + w2;
+    const tot = P.grLabel ? 26 + w1 + 40 + 26 + w2 : 26 + w1;
     let x = VW/2 - tot/2;
     const sw = (col, ox) => {
       ctx.fillStyle = col; ctx.beginPath();
       ctx.roundRect ? ctx.roundRect(x, yLeg-4, 20, 8, 2) : ctx.rect(x, yLeg-4, 20, 8); ctx.fill();
-      if (ox){
+      if (ox && SP) spacerBall(x + 10, yLeg - 10, 5.5, 5.5);
+      else if (ox){
         ctx.strokeStyle = P.csColor; ctx.lineWidth = 2.2;
         for (const dx of [5, 14]){ ctx.beginPath(); ctx.moveTo(x+dx, yLeg-4); ctx.quadraticCurveTo(x+dx+3, yLeg-9, x+dx, yLeg-13); ctx.stroke(); }
       }
@@ -2892,6 +2952,56 @@ function chitosanChain(y0, seed, X0, X1, zc){
   }
   return atoms;
 }
+/* ball-and-stick graphene-oxide sheet in the plane z = 0, clipped to SX x SY:
+   honeycomb carbons (C–C 1.42 Å), epoxy / hydroxyl groups on the basal plane
+   (mostly on top), carboxyls on the edge carbons; oxidised carbons pucker slightly */
+function goSheetModel(SX, SY, oxFrac, seed){
+  const C = [], idx = new Map(), key = (x,y) => Math.round(x*100) + "," + Math.round(y*100);
+  const inS = (a,b) => a >= SX[0] && a <= SX[1] && b >= SY[0] && b <= SY[1];
+  for (let i=-45;i<=45;i++) for (let j=-30;j<=30;j++){
+    const ax = i*2.46 + j*1.23, ay = j*2.13;
+    for (const [x,y,s] of [[ax,ay,0],[ax+1.23,ay+0.71,1]]) if (inS(x,y)){ idx.set(key(x,y), C.length); C.push([x,y,0,s]); }
+  }
+  const NB = [[1.23,0.71],[-1.23,0.71],[0,-1.42]];
+  let nb = C.map(([x,y,,s]) => NB.map(([dx,dy]) => idx.get(key(x + (s ? -dx : dx), y + (s ? -dy : dy)))).filter(k => k != null));
+  // drop dangling carbons (fewer than two in-sheet neighbours), twice
+  for (let pass=0; pass<2; pass++){
+    const dead = new Set(nb.map((n,i) => n.length < 2 ? i : -1).filter(i => i >= 0));
+    nb = nb.map((n,i) => dead.has(i) ? [] : n.filter(k => !dead.has(k)));
+  }
+  const alive = nb.map(n => n.length >= 2);
+  const r = prng(seed), used = new Set(), up = {balls:[], sticks:[]}, dn = {balls:[], sticks:[]};
+  const grp = side => side > 0 ? up : dn;
+  for (let i=0;i<C.length;i++){
+    if (!alive[i] || used.has(i) || r() > oxFrac) continue;
+    const [x,y] = C[i], side = r() < 0.72 ? 1 : -1, g = grp(side);
+    if (nb[i].length < 3){                                         // edge: COOH, plane normal to the sheet
+      let ux = 0, uy = 0;
+      for (const k of nb[i]){ ux -= C[k][0] - x; uy -= C[k][1] - y; }
+      const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+      const cc = [x + 1.45*ux, y + 1.45*uy, 0.15], oa = [cc[0] + 0.62*ux, cc[1] + 0.62*uy, 1.07];
+      const ob = [cc[0] + 0.62*ux, cc[1] + 0.62*uy, -1.07], h = [ob[0] + 0.9*ux, ob[1] + 0.9*uy, ob[2] - 0.25];
+      up.balls.push(["C", ...cc], ["O", ...oa]); up.sticks.push([[x,y,0], cc], [cc, oa]);
+      dn.balls.push(["O", ...ob], ["H", ...h]); dn.sticks.push([cc, ob], [ob, h]);
+      used.add(i);
+    } else if (r() < 0.5){                                         // epoxy bridging a C–C bond
+      const k = nb[i].find(q => !used.has(q) && alive[q]);
+      if (k == null) continue;
+      C[i][2] = C[k][2] = 0.22*side;
+      const o = [(x + C[k][0])/2, (y + C[k][1])/2, 1.05*side];
+      g.balls.push(["O", ...o]); g.sticks.push([C[i].slice(0,3), o], [C[k].slice(0,3), o]);
+      for (const q of [i, k, ...nb[i], ...nb[k]]) used.add(q);
+    } else {                                                       // hydroxyl
+      C[i][2] = 0.3*side;
+      const th = uni(r, 0, TAU), o = [x, y, 1.45*side], h = [x + 0.6*Math.cos(th), y + 0.6*Math.sin(th), o[2] + 0.72*side];
+      g.balls.push(["O", ...o], ["H", ...h]); g.sticks.push([C[i].slice(0,3), o], [o, h]);
+      for (const q of [i, ...nb[i]]) used.add(q);
+    }
+  }
+  const bonds = [];
+  nb.forEach((n,i) => n.forEach(k => { if (k > i) bonds.push([C[i].slice(0,3), C[k].slice(0,3)]); }));
+  return {carbons: C.filter((c,i) => alive[i]).map(c => c.slice(0,3)), bonds, up, dn};
+}
 function drawGOCS3D(ctx,t,P,W,H){
   const T = 90, f = t*T;
   const PHI = P.yaw*Math.PI/180, PSI = P.pitch*Math.PI/180;
@@ -2924,14 +3034,37 @@ function drawGOCS3D(ctx,t,P,W,H){
   const ATOMS = G3.chains;
 
   /* ---- static layers (cached): sheet + honeycomb, then glow + channels ---- */
-  const sk = [W,H,P.yaw,P.pitch,P.zoom,nC,P.sheetColor,P.glowColor,P.chanColor,P.chanAlpha,P.showHoney,P.showGlow,P.showChan,P.atomScale].join("|");
+  const sk = [W,H,P.yaw,P.pitch,P.zoom,nC,P.sheetColor,P.glowColor,P.chanColor,P.chanAlpha,P.showHoney,P.showGlow,P.showChan,P.atomScale,P.sheetMode,P.oxFrac,P.sheetAtom,P.cColor].join("|");
   if (G3.statKey !== sk){
     const mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return c; };
     const base = mk(), mid = mk();
     let x = base.getContext("2d");
     const poly = (cx, pts, fill) => { cx.fillStyle = fill; cx.beginPath(); pts.forEach((p,i) => i ? cx.lineTo(p[0],p[1]) : cx.moveTo(p[0],p[1])); cx.closePath(); cx.fill(); };
-    poly(x, [proj(SX[0],SY[0],0), proj(SX[1],SY[0],0), proj(SX[1],SY[1],0), proj(SX[0],SY[1],0)], P.sheetColor);
-    if (P.showHoney){
+    const atomic = (P.sheetMode ?? "atoms") === "atoms";
+    if (atomic){
+      const M = goSheetModel(SX, SY, (P.oxFrac ?? 12)/100, 17);
+      const kA = (P.sheetAtom ?? 100)/100, RB = {C:0.36*kA, O:0.50*kA, H:0.30*kA};
+      const cRGB = hex2rgb(P.cColor ?? "#5a5d64"), col = el => el === "C" ? cRGB : CPK[el];
+      const sticks = (list, w, c0, c1) => {
+        x.lineCap = "round";
+        for (const [lw, cs] of [[w, c0], [w*0.42, c1]]){
+          x.strokeStyle = cs; x.lineWidth = lw*SC; x.beginPath();
+          for (const [a, b] of list){ const A = proj(...a), B = proj(...b); x.moveTo(A[0], A[1]); x.lineTo(B[0], B[1]); }
+          x.stroke();
+        }
+      };
+      const balls = list => {
+        list.map(([el, ax, ay, az]) => { const p = proj(ax, ay, az); return [p[2], p[0], p[1], RB[el]*SC, col(el)]; })
+            .sort((a, b) => b[0] - a[0])
+            .forEach(([, X, Y, rr, c]) => { const s = sphereSprite(rr, c); x.drawImage(s.cv, X - s.half, Y - s.half, s.size, s.size); });
+      };
+      const gs = "#8c8c90", gh = "#cfcfd3";
+      sticks(M.dn.sticks, 0.22*kA, gs, gh); balls(M.dn.balls);                       // groups under the sheet
+      sticks(M.bonds, 0.26*kA, shade(P.cColor ?? "#5a5d64", -18), shade(P.cColor ?? "#5a5d64", 45));
+      balls(M.carbons.map(c => ["C", ...c]));
+      sticks(M.up.sticks, 0.22*kA, gs, gh); balls(M.up.balls);                       // groups on top
+    } else poly(x, [proj(SX[0],SY[0],0), proj(SX[1],SY[0],0), proj(SX[1],SY[1],0), proj(SX[0],SY[1],0)], P.sheetColor);
+    if (!atomic && P.showHoney){
       const inS = (a,b) => a >= SX[0] && a <= SX[1] && b >= SY[0] && b <= SY[1];
       x.strokeStyle = "rgba(150,118,80,0.78)"; x.lineWidth = 1.3*kS; x.beginPath();
       const dots = [];
@@ -2950,11 +3083,13 @@ function drawGOCS3D(ctx,t,P,W,H){
       x.fillStyle = "rgba(128,98,64,0.9)";
       for (const [a,b] of dots){ const p = proj(a,b,0); x.beginPath(); x.arc(p[0], p[1], 1.6*kS, 0, TAU); x.fill(); }
     }
-    // sheet edge (thickness)
-    const e0 = proj(SX[0],SY[0],0), e1 = proj(SX[1],SY[0],0), f0 = proj(SX[0],SY[0],-1.2), f1 = proj(SX[1],SY[0],-1.2);
-    poly(x, [e0,e1,f1,f0], shade(P.sheetColor, -56));
-    const e2 = proj(SX[0],SY[1],0), f2 = proj(SX[0],SY[1],-1.2);
-    poly(x, [e0,e2,f2,f0], shade(P.sheetColor, -36));
+    // sheet edge (thickness), slab mode only
+    if (!atomic){
+      const e0 = proj(SX[0],SY[0],0), e1 = proj(SX[1],SY[0],0), f0 = proj(SX[0],SY[0],-1.2), f1 = proj(SX[1],SY[0],-1.2);
+      poly(x, [e0,e1,f1,f0], shade(P.sheetColor, -56));
+      const e2 = proj(SX[0],SY[1],0), f2 = proj(SX[0],SY[1],-1.2);
+      poly(x, [e0,e2,f2,f0], shade(P.sheetColor, -36));
+    }
     // cyan glow under the chains
     x = mid.getContext("2d");
     if (P.showGlow){
@@ -2994,8 +3129,9 @@ function drawGOCS3D(ctx,t,P,W,H){
   const ax0 = proj(0,0,0), ax1 = proj(10,0,0), ang = Math.atan2(ax1[1]-ax0[1], ax1[0]-ax0[0]);
   {
     const p = proj(4, SY[0] + 4.5, 0);
-    rtext(ctx, P.phobLabel, p[0], p[1], ang, {size:30*kS, italic:true, weight:"300", color:"rgba(70,50,30,0.92)",
-          shadow:"rgba(255,255,255,0.9)", shadowBlur:3*kS});
+    const atomic = (P.sheetMode ?? "atoms") === "atoms";    // on the open lattice the label needs more weight and halo
+    rtext(ctx, P.phobLabel, p[0], p[1], ang, {size:30*kS, italic:true, weight:atomic ? "500" : "300",
+          color:atomic ? "rgba(25,25,35,0.95)" : "rgba(70,50,30,0.92)", shadow:"rgba(255,255,255,1)", shadowBlur:(atomic ? 6 : 3)*kS});
   }
   ctx.drawImage(G3.stat.mid, 0, 0);
 
@@ -3323,6 +3459,378 @@ function drawPathwayEng(ctx,t,P,W,H){
   ctx.restore();
 }
 
+/* ============ path length vs thickness and flake size (3 panels) ============ */
+// block ("hollow") arrow, horizontal, from x0 to the tip at x1
+function hollowArrow(ctx,x0,x1,y,hw,hh,hl,fill,stroke){
+  const v = elem("A", arrowKey(), "", stroke);
+  if (!v) return;
+  if (v === 2) hlOn(ctx);
+  const d = Math.sign(x1 - x0), xh = x1 - d*hl;
+  ctx.beginPath();
+  ctx.moveTo(x0, y - hw); ctx.lineTo(xh, y - hw); ctx.lineTo(xh, y - hh); ctx.lineTo(x1, y);
+  ctx.lineTo(xh, y + hh); ctx.lineTo(xh, y + hw); ctx.lineTo(x0, y + hw); ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.lineJoin = "miter"; ctx.stroke();
+  if (v === 2) ctx.restore();
+}
+function drawPathLen(ctx,t,P,W,H){
+  const T = 100, f = t*T;
+  const kX = (P.textSize ?? 100)/100, kM = (P.molSize ?? 100)/100;
+  const TH = 12*P.flakeThick/100, GAL = 13*P.gallery/100, DY = TH + GAL, GAP = 16;
+  const NR = P.rows, NT = Math.min(P.thinRows, NR), FL = P.flakeLen, FS = Math.max(24, FL*P.sizeRatio/100);
+  const PW = 290, X0 = [50, 475, 900];
+  const hOf = n => n*TH + (n-1)*GAL, Hm = hOf(NR);
+  const TOP = P.title ? 46*kX : 8, YC = TOP + 96 + Hm/2;
+  const capY = YC + Hm/2 + 72;
+  const nCap = (P.capLeft || P.capMid || P.capRight ? 1 : 0) + (P.showPathLen ? 1 : 0);
+  const VW = 1240, VH = Math.max(280, YC + Hm/2 + 74 + nCap*24*kX);
+  fitLayout(ctx, W, H, VW, VH, 1240, 290);
+
+  // three laminates: thinner | reference | smaller flakes
+  const panels = [[X0[0], NT, FL, P.lThin, P.capLeft], [X0[1], NR, FL, P.lMid, P.capMid], [X0[2], NR, FS, P.lMid, P.capRight]]
+    .map(([x0, n, fl, lab, cap]) => {
+      const x1 = x0 + PW, top = YC - hOf(n)/2, bot = top + hOf(n), pitch = fl + GAP, cx = (x0 + x1)/2;
+      const rows = brickRows(x0, x1, top, n, DY, fl, GAP, pitch*0.3, [], 0);
+      // route: in through the top-row slit nearest the centre, then along each gallery
+      // to the next slit on the centre side (always half a pitch), out under the last row
+      const sl0 = rows[0].slits.length ? rows[0].slits : [cx];
+      let x = sl0.reduce((a, b) => Math.abs(b - cx) < Math.abs(a - cx) ? b : a);
+      // the permeant rides the feed stream in from the left edge, then drops into the first slit
+      const pts = [[x0 + 2, top - 56], [x, top - 56]];
+      rows.forEach((row, i) => {
+        pts.push([x, row.y - GAL/2]);
+        if (i === 0) return;
+        const L = row.slits.filter(s => s < x - 1), R = row.slits.filter(s => s > x + 1);
+        const goR = x < cx ? R.length > 0 : !L.length;
+        if (goR && R.length) x = Math.min(...R); else if (L.length) x = Math.max(...L);
+        pts.push([x, row.y - GAL/2]);
+      });
+      pts.push([x, bot + GAL/2], [x, bot + 58]);
+      return {x0, x1, n, top, bot, rows, pts, lab, cap, film: plen(pts.slice(2, -1))};
+    });
+  const Lref = panels[1].film;
+
+  // feed stream: molecules sweep left to right above each laminate (whole laps per loop),
+  // in two lanes clear of the permeants' lane at top - 56; fade in/out at the panel edges
+  const feed = (pn, seed) => {
+    if (!P.showAmbient) return;
+    const r = prng(seed), sp = Math.max(1, Math.round(P.speed)), cnt = P.feedMol ?? 8;
+    for (let j=0;j<cnt;j++){
+      const by0 = j%2 ? uni(r, pn.top - 90, pn.top - 70) : uni(r, pn.top - 42, pn.top - 30);
+      const ph = r(), sp2 = sp + (j%3 === 0 ? 1 : 0), rot = uni(r, 0, TAU);
+      const bx = pn.x0 + ((ph + t*sp2) % 1)*PW, by = by0 + 2.5*Math.sin(TAU*(3*t + ph));
+      const al = clamp(Math.min(bx - pn.x0, pn.x1 - bx)/30, 0, 1);
+      if (al <= 0.01) continue;
+      ctx.globalAlpha = al;
+      (j >> 1)%2 ? molCO2(ctx, bx, by, 3.4*kM, rot + TAU*t) : molH2(ctx, bx, by, 3.7*kM, rot + TAU*t*2);
+      ctx.globalAlpha = 1;
+    }
+  };
+  const v = 2.4*P.speed;
+
+  if (P.title) ptext(ctx, P.title, VW/2, 8, 21*kX, PAL.NAVY, true, "ma");
+  panels.forEach((pn, ip) => {
+    for (const row of pn.rows) for (const [a, b] of row.flakes) rrect(ctx, a, row.y, b, row.y + TH, P.goColor);
+    if (P.showGuide){
+      const g = pn.pts.slice(1).map(p => p.slice()); g[0][1] = pn.top - 36; g[g.length-1][1] = pn.bot + 40;
+      ctx.save(); ctx.setLineDash([7, 5]); ctx.strokeStyle = P.pathColor; ctx.lineWidth = 2.2; ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(g[0][0], g[0][1]); for (const p of g.slice(1)) ctx.lineTo(p[0], p[1]); ctx.stroke();
+      ctx.restore();
+      const e = g[g.length-1]; arrowRaw(ctx, e[0], e[1] - 2, e[0], e[1] + 9, P.pathColor, 2.2, 10);
+    }
+    feed(pn, 31 + ip);
+    // moving molecules: same speed everywhere; with fluxScale the feed rate goes as 1 / path length
+    // (capped so neighbours on the route stay at least one molecule length apart)
+    const n = clamp(Math.round(P.nMol*P.speed*(P.fluxScale ? Lref/pn.film : 1)), 1, Math.max(1, Math.floor(v*T/(20*kM))));
+    const Ltot = plen(pn.pts), M = Math.ceil(Ltot/(v*T)) + 1;
+    for (let k=0;k<n;k++){
+      const base = ((f - k*T/n) % T + T) % T;
+      for (let m=0;m<=M;m++){
+        const age = base + m*T, s = pathMover(pn.pts, null, age, v, 0, 8, 30);
+        if (!s) continue;
+        const [x, y, a, al] = s, inside = y > pn.top - GAL && y < pn.bot + GAL;
+        const ang = inside ? a : a + 0.12*age;
+        ctx.globalAlpha = al;
+        k%2 ? molCO2(ctx, x, y, 3.4*kM, ang) : molH2(ctx, x, y, 3.7*kM, ang);
+        ctx.globalAlpha = 1;
+      }
+    }
+    // thickness bracket
+    vArrow2(ctx, pn.x1 + 16, pn.top, pn.bot, PAL.TXT, 1.25);
+    text(ctx, pn.lab, pn.x1 + 33, (pn.top + pn.bot)/2, {size:25*kX, italic:true, color:PAL.TXT});
+    let cy = capY;
+    if (pn.cap){ ptext(ctx, pn.cap, (pn.x0 + pn.x1)/2, cy, 16*kX, PAL.TXT, true, "ma"); cy += 24*kX; }
+    if (P.showPathLen) ptext(ctx, "path ≈ " + (pn.film/Lref).toFixed(2) + " ×", (pn.x0 + pn.x1)/2, cy, 15*kX, P.pathColor, false, "ma");
+  });
+  // trend arrows between the panels
+  const ay = YC + 14*kX;
+  hollowArrow(ctx, X0[1] - 12, X0[0] + PW + 52, ay, 7, 14, 20, "#ffffff", "#7f7f7f");
+  ptext(ctx, P.thickLabel, (X0[1] - 12 + X0[0] + PW + 52)/2, ay - 40*kX, 18*kX, PAL.TXT, false, "ma");
+  hollowArrow(ctx, X0[1] + PW + 52, X0[2] - 12, ay, 7, 14, 20, "#ffffff", "#7f7f7f");
+  ptext(ctx, P.sizeLabel, (X0[1] + PW + 52 + X0[2] - 12)/2, ay - 40*kX, 18*kX, PAL.TXT, false, "ma");
+  ctx.restore();
+}
+
+/* ============ two laminates side by side: thin | thick, large | small flakes, loose | tight stacking ============ */
+/* Port of QE/Oral defense/build_v1/gifs/g2_pathway.py. Each panel is a brick laminate on a porous support.
+   A permeant drops into the top gallery, runs along it to the nearest slit, drops through, and repeats one
+   row down. CO2 is sieved gallery by gallery: it clears a gallery of route length s with probability
+   (co2Pass)^(s/100 px), otherwise it stops at the slit, rattles and retraces out. A through-gap (voids) is a
+   column cut out of every row: it is a short cut and it does not sieve. Wrinkle bends flakes and galleries.
+   Every motion depends only on the molecule's age modulo the loop, so the GIF closes on itself. */
+function pathPairRows(x0, x1, ytop, n, DY, fl, gap, r, nVoid, vw, shift){
+  // shift > 0: each row is offset by `shift` px from the one above (a staircase), so flake edges almost
+  // line up and the flakes overlap a little; shift = half a pitch gives a regular brick wall;
+  // shift = 0: each row gets a random offset
+  const pitch = fl + gap, rows = [], ph0 = uni(r, 0, TAU), off0 = shift ? uni(r, 0, pitch) : 0;
+  for (let i=0;i<n;i++){
+    const off = shift ? off0 + i*shift : uni(r, 0, pitch), flakes = [], slits = [];
+    for (let x = x0 - off; x < x1; x += pitch){
+      const a = Math.max(x, x0), b = Math.min(x + fl, x1);
+      if (b - a > 2) flakes.push([a, b]);
+      const sc = x + fl + gap/2;
+      if (x0 + 8 < sc && sc < x1 - 8) slits.push(sc);
+    }
+    rows.push({y: ytop + i*DY, flakes, slits, voids: [], ph: ph0 + 0.7*i});
+  }
+  for (let k=0;k<nVoid;k++){
+    const pc0 = x0 + (k + 0.5)*(x1 - x0)/nVoid + uni(r, -25, 25);
+    rows.forEach(row => {
+      const pc = pc0 + uni(r, -4, 4), nw = [];
+      for (const [a, b] of row.flakes){
+        if (b <= pc - vw/2 || a >= pc + vw/2){ nw.push([a, b]); continue; }
+        if (pc - vw/2 - a > 4) nw.push([a, pc - vw/2]);
+        if (b - (pc + vw/2) > 4) nw.push([pc + vw/2, b]);
+      }
+      row.flakes = nw; row.voids.push(pc); row.slits.push(pc);
+    });
+  }
+  return rows;
+}
+function drawPathPair(ctx,t,P,W,H){
+  const T = 120, f = t*T, kX = (P.textSize ?? 100)/100, kM = (P.molSize ?? 100)/100;
+  const TH = 9*P.flakeThick/100, DY = TH + 14*P.gallery/100, GAP = 14, G = DY - TH;
+  const has = s => !!s && textVisible(s);
+  const PW = 400, GUT = 70, X0 = [30, 30 + PW + GUT], VW = X0[1] + PW + 30;
+  const hT = (has(P.titleA) || has(P.titleB)) ? 28*kX : 0, hS = (has(P.subA) || has(P.subB)) ? 22*kX : 0;
+  const FEEDH = 54, yFeed = 8 + hT + hS + (hT || hS ? 8 : 0), ytop = yFeed + FEEDH + 12;
+  const nMax = Math.max(P.rowsA, P.rowsB), Amax = Math.max(P.wrinkleA, P.wrinkleB);
+  const yPermBot = ytop + (nMax - 1)*DY + TH + 2*Amax + 30 + P.permH;
+  const hF = has(P.footer) ? 30*kX : 0, VH = yPermBot + 8 + hF;
+  fitLayout(ctx, W, H, VW, VH, VW, VH);
+  const lnP = Math.log(Math.max(1e-6, P.co2Pass/100));
+  if (has(P.footer) && X0.length) ptext(ctx, P.footer, VW/2, yPermBot + 10, 16*kX, PAL.GREY, false, "ma");
+  [{x0:X0[0], n:P.rowsA, fl:P.flakeA, A:P.wrinkleA, nv:P.voidsA, sh:P.shiftA || 0, ti:P.titleA, su:P.subA, seed:11},
+   {x0:X0[1], n:P.rowsB, fl:P.flakeB, A:P.wrinkleB, nv:P.voidsB, sh:P.shiftB || 0, ti:P.titleB, su:P.subB, seed:12}].forEach(pn => {
+    const x0 = pn.x0, x1 = x0 + PW, cx = (x0 + x1)/2;
+    const rows = pathPairRows(x0, x1, ytop, pn.n, DY, pn.fl, GAP, prng(pn.seed), pn.nv, 2.2*GAP, pn.sh);
+    const wv = (i, x) => pn.A ? pn.A*Math.sin(TAU*(x - x0)/(1.7*pn.fl) + rows[i].ph) : 0;
+    const bot = rows[pn.n - 1].y + TH + pn.A, ySup = bot + 6;
+    if (has(pn.ti)) ptext(ctx, pn.ti, cx, 8, 20*kX, PAL.NAVY, true, "ma");
+    if (has(pn.su)) ptext(ctx, pn.su, cx, 8 + hT, 15*kX, PAL.GREY, false, "ma");
+    if (P.showZones){
+      rrect(ctx, x0 - 10, yFeed, x1 + 10, yFeed + FEEDH, P.feedTint, 6);
+      rrect(ctx, x0 - 10, ySup + 18, x1 + 10, yPermBot, P.permTint, 6);
+    }
+    if (has(P.feedLabel)) ptext(ctx, P.feedLabel, x0 - 4, yFeed + 3, 13*kX, PAL.NAVY, true, "la");
+    if (has(P.permLabel)) ptext(ctx, P.permLabel, x0 - 4, yPermBot - 20*kX, 13*kX, PAL.GREEN, true, "la");
+    if (P.showSupport) for (let k=0;k<6;k++){
+      const a = x0 + k*PW/6 + 6; rrect(ctx, a, ySup, a + PW/6 - 14, ySup + 12, P.supColor);
+    }
+    // feed stream: molecules sweep left to right across the feed box (whole laps per loop, as in the
+    // lamellar template), in two lanes clear of the permeants' lane; they fade in/out at the box ends
+    const lane = yFeed + FEEDH*0.55;
+    { const r = prng(pn.seed + 5);
+      for (let j=0;j<P.feedMol;j++){
+        const by0 = j%2 ? uni(r, yFeed + 10, yFeed + 18) : uni(r, yFeed + FEEDH - 9, yFeed + FEEDH - 5);
+        const ph = r(), rot = uni(r, 0, TAU), sp = j%3 === 0 ? 2 : 1;
+        const bx = x0 - 8 + ((ph + t*sp) % 1)*(PW + 16), by = by0 + 2*Math.sin(TAU*(3*t + ph));
+        const al = clamp(Math.min(bx - x0 + 8, x1 + 8 - bx)/30, 0, 1);
+        if (al <= 0.01) continue;
+        ctx.globalAlpha = al;
+        (j >> 1)%2 ? molCO2(ctx, bx, by, 3.6*kM, rot + TAU*t) : molH2(ctx, bx, by, 4.0*kM, rot + TAU*2*t);
+        ctx.globalAlpha = 1;
+      } }
+    // flakes (wrinkled flakes are bent strips)
+    rows.forEach((row, i) => { for (const [a, b] of row.flakes){
+      if (!pn.A){ rrect(ctx, a, row.y, b, row.y + TH, P.goColor, 0, P.goEdge, 1); continue; }
+      ctx.beginPath();
+      for (let x = a; x <= b + 0.1; x += Math.min(4, b - a)) ctx.lineTo(x, row.y + wv(i, x));
+      for (let x = b; x >= a - 0.1; x -= Math.min(4, b - a)) ctx.lineTo(x, row.y + TH + wv(i, x));
+      ctx.closePath(); ctx.fillStyle = P.goColor; ctx.fill(); ctx.strokeStyle = P.goEdge; ctx.lineWidth = 1; ctx.stroke();
+    } });
+    // route through the film from top-row slit xs: along each gallery to the nearest slit, then down.
+    // r == null gives the sieve-free guide route; otherwise CO2 may be turned back (fail = node index)
+    const nearest = (row, x) => row.slits.reduce((p, q) => Math.abs(q - x) < Math.abs(p - x) ? q : p, row.slits[0] ?? x);
+    const route = (xs, gas, r) => {
+      const pts = [];
+      let x = xs, fail = null;
+      rows.forEach((row, i) => {
+        const gy = xx => row.y - G/2 + wv(i, xx);
+        const s = nearest(row, x);
+        pts.push([x, gy(x)]);
+        const st = Math.sign(s - x) || 1;
+        for (let xx = x + 5*st; st*(s - xx) > 0; xx += 5*st) pts.push([xx, gy(xx)]);
+        pts.push([s, gy(s)]);
+        const u = r ? r() : 0, void_ = row.voids.some(v => Math.abs(v - s) < 1);
+        if (gas === "CO2" && fail == null && !void_ && u > Math.exp(lnP*(Math.abs(s - x) + DY)/100)) fail = pts.length - 1;
+        pts.push([s, row.y + TH + wv(i, s) + 2]);
+        x = s;
+      });
+      pts.push([x, ySup + 18 + 0.45*P.permH]);
+      return {pts, fail};
+    };
+    // dashed guide: the route of one molecule that enters the top-row slit nearest guideX
+    if (P.showGuide){
+      const g = route(nearest(rows[0], x0 + PW*(P.guideX ?? 40)/100), "H2", null).pts;
+      g.unshift([g[0][0], yFeed + FEEDH - 2]);
+      const e = g[g.length - 1]; e[1] = ySup + 12;
+      ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = P.pathColor; ctx.lineWidth = 2.2*(P.guideW ?? 100)/100;
+      ctx.lineJoin = "round"; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.moveTo(g[0][0], g[0][1]); for (const p of g.slice(1)) ctx.lineTo(p[0], p[1]); ctx.stroke();
+      ctx.restore();
+      arrowRaw(ctx, e[0], e[1] - 2, e[0], e[1] + 10, P.pathColor, 2.2*(P.guideW ?? 100)/100, 9);
+    }
+    // permeants: alternate H2 / CO2, fixed spawn times, deterministic routes; each rides the feed stream
+    // for a short stretch, then drops into a top-row slit
+    const r = prng(pn.seed*7 + 3), n = P.nMol;
+    for (let k=0;k<n;k++){
+      const gas = k%2 ? "CO2" : "H2", xs = nearest(rows[0], uni(r, x0 + 20, x1 - 20));
+      const rt = route(xs, gas, r), pts = [[Math.max(x0 - 6, xs - 130), lane], [xs, lane], ...rt.pts];
+      const fail = rt.fail == null ? null : rt.fail + 2;
+      const v = (gas === "H2" ? 4.2 : 2.2)*P.speed, Lt = plen(pts), M = Math.ceil(Lt/(v*T)) + 2;
+      const base = ((f - k*T/n) % T + T) % T;
+      for (let m=0;m<=M;m++){
+        const s = pathMover(pts, fail, base + m*T, v, 14, 16, 30);
+        if (!s) continue;
+        const [mx, my, a, al] = s, inside = my > ytop - G && my < bot;
+        ctx.globalAlpha = clamp(al, 0, 1);
+        gas === "H2" ? molH2(ctx, mx, my, 4.2*kM, inside ? a : a + 0.3*(base + m*T))
+                     : molCO2(ctx, mx, my, 3.8*kM, inside ? a : a + 0.15*(base + m*T));
+        ctx.globalAlpha = 1;
+      }
+    }
+  });
+  ctx.strokeStyle = "#c8c8c8"; ctx.lineWidth = 1;
+  if (P.showDivider){ ctx.beginPath(); ctx.moveTo(VW/2, yFeed); ctx.lineTo(VW/2, yPermBot); ctx.stroke(); }
+  ctx.restore();
+}
+const pathPairParams = d => [
+  {key:"rowsA",     label:"Left: flake rows",          type:"range", min:1, max:12, step:1, def:d.rowsA},
+  {key:"rowsB",     label:"Right: flake rows",         type:"range", min:1, max:12, step:1, def:d.rowsB},
+  {key:"flakeA",    label:"Left: flake length (px)",   type:"range", min:30, max:220, step:2, def:d.flakeA},
+  {key:"flakeB",    label:"Right: flake length (px)",  type:"range", min:30, max:220, step:2, def:d.flakeB},
+  {key:"wrinkleA",  label:"Left: wrinkle (px)",        type:"range", min:0, max:8, step:0.5, def:d.wrinkleA || 0},
+  {key:"wrinkleB",  label:"Right: wrinkle (px)",       type:"range", min:0, max:8, step:0.5, def:d.wrinkleB || 0},
+  {key:"voidsA",    label:"Left: through-gaps (no sieving)",  type:"range", min:0, max:4, step:1, def:d.voidsA || 0},
+  {key:"voidsB",    label:"Right: through-gaps (no sieving)", type:"range", min:0, max:4, step:1, def:d.voidsB || 0},
+  {key:"shiftA",    label:"Left: row-to-row offset (px, 0 = random)",  type:"range", min:0, max:120, step:2, def:d.shiftA || 0},
+  {key:"shiftB",    label:"Right: row-to-row offset (px, 0 = random)", type:"range", min:0, max:120, step:2, def:d.shiftB || 0},
+  {key:"showGuide", label:"Dashed path through each film", type:"checkbox", def:!!d.showGuide},
+  {key:"guideX",    label:"Path starts at (% of width)", type:"range", min:5, max:95, step:1, def:d.guideX ?? 40},
+  {key:"guideW",    label:"Path line width %",         type:"range", min:50, max:250, step:10, def:100},
+  {key:"pathColor", label:"Path line",                 type:"color", def:"#002d72"},
+  {key:"nMol",      label:"Permeating molecules per loop (each panel)", type:"range", min:2, max:40, step:1, def:d.nMol ?? 10},
+  {key:"feedMol",   label:"Idle feed molecules",       type:"range", min:0, max:20, step:1, def:d.feedMol ?? 6},
+  {key:"co2Pass",   label:"CO₂ passing per 100 px of route (%)", type:"range", min:5, max:100, step:5, def:d.co2Pass ?? 50},
+  {key:"speed",     label:"Speed ×",                   type:"range", min:0.5, max:2, step:0.1, def:1},
+  {key:"flakeThick",label:"Flake thickness %",         type:"range", min:50, max:200, step:5, def:100},
+  {key:"gallery",   label:"Interlayer gap %",          type:"range", min:60, max:200, step:5, def:100},
+  {key:"permH",     label:"Permeate box height (px)",  type:"range", min:30, max:220, step:5, def:d.permH ?? 70},
+  {key:"molSize",   label:"Molecule size %",           type:"range", min:60, max:180, step:5, def:100},
+  {key:"textSize",  label:"Label size %",              type:"range", min:60, max:160, step:5, def:100},
+  {key:"goColor",   label:"GO flakes",                 type:"color", def:"#c46220"},
+  {key:"goEdge",    label:"GO flake edge",             type:"color", def:"#964614"},
+  {key:"supColor",  label:"Support",                   type:"color", def:"#283040"},
+  {key:"feedTint",  label:"Feed box",                  type:"color", def:"#e8f1fb"},
+  {key:"permTint",  label:"Permeate box",              type:"color", def:"#eaf6ea"},
+  {key:"showZones", label:"Feed / permeate boxes",     type:"checkbox", def:true},
+  {key:"showSupport",label:"Porous support",           type:"checkbox", def:true},
+  {key:"showDivider",label:"Divider line",             type:"checkbox", def:true},
+  {key:"titleA",    label:"Left title",                type:"text", def:d.titleA},
+  {key:"subA",      label:"Left subtitle",             type:"text", def:d.subA},
+  {key:"titleB",    label:"Right title",               type:"text", def:d.titleB},
+  {key:"subB",      label:"Right subtitle",            type:"text", def:d.subB},
+  {key:"feedLabel", label:"Feed label",                type:"text", def:"feed: H₂ + CO₂"},
+  {key:"permLabel", label:"Permeate label",            type:"text", def:"permeate"},
+  {key:"footer",    label:"Footer",                    type:"text", def:d.footer},
+];
+
+/* ============ pure vs mixed gas in one GO gallery: competition (P = D x S) ============
+   Close-up of a single gallery between two GO sheets, drawn twice: pure CO2 (top) and an H2/CO2 mixture
+   (bottom). CO2 hops from one oxygen site to the next and waits at each. Both channels let the same
+   number of CO2 through per loop (same P); in the mixture every wait is longer (H2 is in the way:
+   D falls) so more CO2 sits in the channel at any moment (S rises). */
+function hopper(nodes, dw, v){
+  // nodes [[x,y],...], dw[i] = wait at node i (frames), v = px/frame; returns total time + position(age)
+  const seg = [];
+  let tt = 0;
+  for (let i=0;i<nodes.length;i++){
+    if (i){ const L = Math.hypot(nodes[i][0]-nodes[i-1][0], nodes[i][1]-nodes[i-1][1]);
+      seg.push({k:"hop", a:nodes[i-1], b:nodes[i], t0:tt, d:L/v}); tt += L/v; }
+    if (dw[i]){ seg.push({k:"wait", a:nodes[i], t0:tt, d:dw[i]}); tt += dw[i]; }
+  }
+  return {T: tt, at(age){
+    if (age < 0 || age > tt) return null;
+    for (const g of seg){
+      if (age > g.t0 + g.d) continue;
+      const u = (age - g.t0)/Math.max(1e-6, g.d);
+      if (g.k === "wait") return [g.a[0] + 1.2*Math.sin(age*1.7), g.a[1] + 0.8*Math.sin(age*2.3), 0.25*Math.sin(age*0.9), true];
+      return [g.a[0] + u*(g.b[0]-g.a[0]), g.a[1] + u*(g.b[1]-g.a[1]), Math.atan2(g.b[1]-g.a[1], g.b[0]-g.a[0]), false];
+    }
+    return null;
+  }};
+}
+function drawCompete(ctx,t,P,W,H){
+  const T = 120, f = t*T, kX = (P.textSize ?? 100)/100, kM = (P.molSize ?? 100)/100;
+  const VW = 640, SH = 14, CH = P.chGap, LB = 26*kX, ROWH = LB + 2*SH + CH + 16;
+  const VH = 2*ROWH + 4;
+  fitLayout(ctx, W, H, VW, VH, VW, VH);
+  const xL = 18, xR = VW - 18, NS = P.nSites;
+  [{mix:false, lab:P.labelA, dw:P.dwellPure, seed:21}, {mix:true, lab:P.labelB, dw:P.dwellMix, seed:22}].forEach((pn, ip) => {
+    const y0 = ip*ROWH + LB, yT = y0 + SH, yB = yT + CH, yc = (yT + yB)/2;
+    if (pn.lab) ptext(ctx, pn.lab, xL, ip*ROWH + 3, 15*kX, PAL.NAVY, true, "la");
+    rrect(ctx, xL, yT, xR, yB, P.chTint);
+    rrect(ctx, xL, y0, xR, yT, P.goColor, 0, P.goEdge, 1);
+    rrect(ctx, xL, yB, xR, yB + SH, P.goColor, 0, P.goEdge, 1);
+    // oxygen sites, alternating on the two walls
+    const sites = [];
+    for (let j=0;j<NS;j++){
+      const sx = xL + 46 + j*(xR - xL - 92)/(NS - 1), top = j%2 === 0;
+      if (P.showSites){ ctx.beginPath(); ctx.arc(sx, top ? yT + 1 : yB - 1, 3.6, 0, TAU); ctx.fillStyle = P.siteColor; ctx.fill(); }
+      sites.push([sx, top ? yT + 6.5*kM + 3 : yB - 6.5*kM - 3]);
+    }
+    if (P.showArrow){
+      const ya = yc;
+      ctx.save(); ctx.globalAlpha = 0.35; arrowRaw(ctx, xR - 40, ya, xR - 6, ya, PAL.NAVY, 3, 10); ctx.restore();
+    }
+    const r = prng(pn.seed), hopV = 5*P.speed;
+    // H2 (mixture only): runs down the middle of the gallery, held up now and then
+    if (pn.mix) for (let k=0;k<P.nH2;k++){
+      const nodes = [[xL - 4, yc]], dws = [0];
+      for (let j=0;j<NS;j++){ nodes.push([sites[j][0] + uni(r, -8, 8), yc + (j%2 ? -1 : 1)*uni(r, 3, 9)]); dws.push(r() < 0.25 ? uni(r, 4, 9)/P.speed : 0); }
+      nodes.push([xR + 4, yc]); dws.push(0);
+      const h = hopper(nodes, dws, 6.5*P.speed), base = ((f - (k + 0.5)*T/P.nH2) % T + T) % T;
+      for (let m=0;m<=Math.ceil(h.T/T) + 1;m++){
+        const s = h.at(base + m*T); if (!s) continue;
+        ctx.globalAlpha = clamp(Math.min((s[0] - xL + 4)/24, (xR + 4 - s[0])/24), 0, 1);
+        molH2(ctx, s[0], s[1], 6*kM, s[2] + 0.2*(base + m*T)); ctx.globalAlpha = 1;
+      }
+    }
+    // CO2: site-to-site hops with a wait at each site; same number per loop in both channels
+    for (let k=0;k<P.nCO2;k++){
+      const nodes = [[xL - 4, yc], ...sites, [xR + 4, yc]];
+      const dws = nodes.map((_, i) => i === 0 || i === nodes.length - 1 ? 0 : pn.dw*uni(r, 0.6, 1.4)/P.speed);
+      const h = hopper(nodes, dws, hopV), base = ((f - k*T/P.nCO2) % T + T) % T;
+      for (let m=0;m<=Math.ceil(h.T/T) + 1;m++){
+        const s = h.at(base + m*T); if (!s) continue;
+        ctx.globalAlpha = clamp(Math.min((s[0] - xL + 4)/24, (xR + 4 - s[0])/24), 0, 1);
+        molCO2(ctx, s[0], s[1], 5.2*kM, s[3] ? s[2] : s[2]); ctx.globalAlpha = 1;
+      }
+    }
+  });
+  ctx.restore();
+}
 /* ============ P-S map with hand-drawn flat vs crumpled insets (title slide) ============ */
 function drawCrumpledMap(ctx,t,P,W,H){
   const T = 90, f = t*T, VW = 600, VH = 510;
@@ -3513,7 +4021,938 @@ function drawMapInsets(ctx,t,P,W,H){
   ctx.restore();
 }
 
+/* ---- what hydrogen is used for: an isometric city ----
+   A 12 x 12 block drawn in 2:1 isometric projection, cut into four quarters by
+   two crossing roads: power generation (back), transportation (right),
+   industry (left) and buildings (front). An H2 hub in the power quarter feeds
+   every quarter through cyan pipelines along which H2 molecules flow and
+   disappear into the plant, station, factory or house that uses them. Cars,
+   buses and H2 trucks drive the roads, a train runs along the front, the wind
+   turbines turn, the stacks release water vapour (the only exhaust of H2) and
+   office windows glint. Every motion is a whole number of cycles per loop, so
+   the GIF closes on itself. */
+function drawH2City(ctx,t,P,W,H){
+  const kX = P.textSize/100, kM = P.molSize/100, sp = P.speed;
+  const VW = 900, VH = 640;
+  fitLayout(ctx, W, H, VW, VH, 900, 640);
+  const N = 12, A = 33, B = A/2, Z = A, cx = VW/2, y0 = 168;
+  const iso = (gx,gy,z=0) => [cx + (gx-gy)*A, y0 + (gx+gy)*B - z*Z];
+  const EDGE = "rgba(15,23,42,0.22)";
+  const poly = (pts, fill, stroke, lw=0.8) => {
+    ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1])); ctx.closePath();
+    if (fill){ ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke){ ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+  };
+  const rect = (x,y,w,d,z,fill,stroke) => poly([iso(x,y,z),iso(x+w,y,z),iso(x+w,y+d,z),iso(x,y+d,z)], fill, stroke);
+  const line = (a,b,col,lw) => { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke(); };
+  // a box: the +gy face (screen lower left), the +gx face (lower right) and the top
+  const box = (x,y,w,d,h,col,z0=0,top) => {
+    poly([iso(x,y+d,z0),iso(x+w,y+d,z0),iso(x+w,y+d,z0+h),iso(x,y+d,z0+h)], shade(col,-16), EDGE);
+    poly([iso(x+w,y,z0),iso(x+w,y+d,z0),iso(x+w,y+d,z0+h),iso(x+w,y,z0+h)], shade(col,-42), EDGE);
+    poly([iso(x,y,z0+h),iso(x+w,y,z0+h),iso(x+w,y+d,z0+h),iso(x,y+d,z0+h)], top || shade(col,20), EDGE);
+  };
+  // a band of colour round the two visible faces of a box, between heights v0..v1 (0..1)
+  const boxBand = (x,y,w,d,h,z0,v0,v1,col) => {
+    const za = z0+v0*h, zb = z0+v1*h;
+    poly([iso(x,y+d,za),iso(x+w,y+d,za),iso(x+w,y+d,zb),iso(x,y+d,zb)], col);
+    poly([iso(x+w,y,za),iso(x+w,y+d,za),iso(x+w,y+d,zb),iso(x+w,y,zb)], shade(col,-30));
+  };
+  // windows on both visible faces; a few glint on and off during the loop
+  const windows = (x,y,w,d,h,z0,rows,cL,cR,seed,glass) => {
+    const L = (u,v) => iso(x+u*w, y+d, z0+v*h), R = (u,v) => iso(x+w, y+u*d, z0+v*h);
+    const win = (pt,u0,u1,v0,v1,s,dark) => {
+      const lit = (rnd(s) > 0.7) !== (rnd(s+1) < 0.16 && ((t*sp + rnd(s+2)) % 1) < 0.5);
+      poly([pt(u0,v0),pt(u1,v0),pt(u1,v1),pt(u0,v1)], lit ? "#fef9c3" : (dark ? shade(glass,-30) : glass));
+    };
+    for (let r=0;r<rows;r++){
+      const v0 = (r+0.28)/rows, v1 = (r+0.78)/rows;
+      for (let c=0;c<cL;c++) win(L,(c+0.18)/cL,(c+0.82)/cL,v0,v1,seed+r*31+c*7,false);
+      for (let c=0;c<cR;c++) win(R,(c+0.18)/cR,(c+0.82)/cR,v0,v1,seed+900+r*31+c*7,true);
+    }
+  };
+  const cyl = (gx,gy,r,h,col,z0=0,band) => {
+    const [bx,by] = iso(gx,gy,z0), ty = iso(gx,gy,z0+h)[1];
+    const rx = r*A*Math.SQRT2, ry = r*B*Math.SQRT2;
+    const g = ctx.createLinearGradient(bx-rx,0,bx+rx,0);
+    g.addColorStop(0, shade(col,-8)); g.addColorStop(0.4, shade(col,22)); g.addColorStop(1, shade(col,-50));
+    ctx.beginPath(); ctx.ellipse(bx,ty,rx,ry,0,Math.PI,0); ctx.lineTo(bx+rx,by); ctx.ellipse(bx,by,rx,ry,0,0,Math.PI); ctx.closePath();
+    ctx.fillStyle = g; ctx.fill(); ctx.strokeStyle = EDGE; ctx.lineWidth = 0.8; ctx.stroke();
+    if (band){
+      const ya = iso(gx,gy,z0+band[0]*h)[1], yb = iso(gx,gy,z0+band[1]*h)[1];
+      const gb = ctx.createLinearGradient(bx-rx,0,bx+rx,0);
+      gb.addColorStop(0, shade(band[2],-5)); gb.addColorStop(0.4, shade(band[2],25)); gb.addColorStop(1, shade(band[2],-45));
+      ctx.beginPath(); ctx.ellipse(bx,ya,rx,ry,0,0,Math.PI); ctx.lineTo(bx-rx,yb); ctx.ellipse(bx,yb,rx,ry,0,Math.PI,0,true); ctx.closePath();
+      ctx.fillStyle = gb; ctx.fill();
+    }
+    ctx.beginPath(); ctx.ellipse(bx,ty,rx,ry,0,0,TAU); ctx.fillStyle = shade(col,30); ctx.fill(); ctx.strokeStyle = EDGE; ctx.stroke();
+    return [bx, ty];
+  };
+  const sphere = (gx,gy,z,r,col) => {
+    const [x,y] = iso(gx,gy,z), R = r*A*1.3;
+    const g = ctx.createRadialGradient(x-R*0.35,y-R*0.4,R*0.08,x,y,R);
+    g.addColorStop(0,"#ffffff"); g.addColorStop(0.4,col); g.addColorStop(1,shade(col,-70));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,R,0,TAU); ctx.fill();
+    ctx.strokeStyle = EDGE; ctx.lineWidth = 0.8; ctx.stroke();
+    return [x,y,R];
+  };
+  const tree = (gx,gy,s=1) => {
+    const [x,y] = iso(gx,gy,0);
+    ctx.fillStyle = "rgba(15,23,42,0.12)"; ctx.beginPath(); ctx.ellipse(x,y,9*s,4.5*s,0,0,TAU); ctx.fill();
+    ctx.fillStyle = "#92400e"; ctx.fillRect(x-1.6*s, y-12*s, 3.2*s, 12*s);
+    for (const [dx,dy,r,c] of [[0,-19,9,"#16a34a"],[-4,-23,6,"#22c55e"],[3,-25,5,"#4ade80"]]){
+      ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x+dx*s, y+dy*s, r*s, 0, TAU); ctx.fill();
+    }
+  };
+  // water-vapour puffs rising from (gx,gy,z): the only exhaust when H2 burns
+  const steam = (gx,gy,z,seed) => {
+    if (!P.showSteam) return;
+    const [x,y] = iso(gx,gy,z);
+    for (let k=0;k<5;k++){
+      const u = (k/5 + t*sp + rnd(seed)) % 1;
+      ctx.globalAlpha = 0.75*(1-u)*smooth(u/0.12);
+      ctx.fillStyle = "#f8fafc"; ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x + 10*u + 3*Math.sin(TAU*(u*2 + seed)), y - 60*u, 5 + 10*u, 0, TAU); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  };
+  const tag = (str,x,y,col="#334155") => {
+    if (!P.showTags || !str || !textVisible(str)) return;
+    ctx.font = `600 ${11.5*kX}px "Segoe UI", Arial, sans-serif`;
+    const w = ctx.measureText(str).width + 10, h = 17*kX;
+    ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.strokeStyle = col; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x-w/2, y-h/2, w, h, h/2) : ctx.rect(x-w/2, y-h/2, w, h); ctx.fill(); ctx.stroke();
+    text(ctx, str, x, y+0.5, {size:11.5*kX, bold:true, color:col});
+  };
+
+  /* ---- ground, lots, roads, rail ---- */
+  const TH = 0.4;
+  poly([iso(0,N),iso(N,N),iso(N,N,-TH),iso(0,N,-TH)], shade(P.groundColor,-40));
+  poly([iso(N,0),iso(N,N),iso(N,N,-TH),iso(N,0,-TH)], shade(P.groundColor,-62));
+  rect(0,0,N,N,0,P.groundColor);
+  rect(0.3,0.3,4.9,4.9,0,"#e2e8f0");                 // power plant yard
+  rect(6.8,0.3,4.9,4.9,0,"#d4d9e0");                 // station forecourt
+  rect(0.3,6.8,4.9,3.7,0,"#e2e8f0");                 // industrial yard
+  rect(8.7,6.8,3.0,3.5,0,"#e7e5e4");                 // office plaza
+  const road = "#5b6474";
+  rect(0,5.4,N,1.2,0,road); rect(5.4,0,1.2,N,0,road);
+  ctx.setLineDash([7,7]);
+  line(iso(0,6), iso(5.4,6), "#f8fafc", 1.6); line(iso(6.6,6), iso(N,6), "#f8fafc", 1.6);
+  line(iso(6,0), iso(6,5.4), "#f8fafc", 1.6); line(iso(6,6.6), iso(6,N), "#f8fafc", 1.6);
+  ctx.setLineDash([]);
+  for (const [a,b] of [[[0,5.4],[N,5.4]],[[0,6.6],[N,6.6]],[[5.4,0],[5.4,N]],[[6.6,0],[6.6,N]]]){
+    // kerbs, broken at the junction
+    const isX = a[1] === b[1], c = isX ? a[1] : a[0];
+    for (const [s0,s1] of [[0,5.4],[6.6,N]])
+      line(isX ? iso(s0,c) : iso(c,s0), isX ? iso(s1,c) : iso(c,s1), "#e2e8f0", 1.4);
+  }
+  // zebra crossings
+  for (let k=0;k<5;k++){
+    rect(4.75,5.5+k*0.24,0.45,0.12,0,"rgba(248,250,252,0.85)");
+    rect(5.5+k*0.24,6.8,0.12,0.45,0,"rgba(248,250,252,0.85)");
+  }
+  if (P.showTrain){
+    rect(0,10.7,N,0.6,0,"#a8a29e");
+    for (let s=0.1;s<N;s+=0.32) rect(s,10.76,0.1,0.48,0,"#78716c");
+    line(iso(0,10.86), iso(N,10.86), "#334155", 1.6); line(iso(0,11.14), iso(N,11.14), "#334155", 1.6);
+  }
+
+  /* ---- H2 pipelines and the molecules in them ---- */
+  const hub = [4.25,4.25];
+  const pipes = [
+    [[4.25,3.7],[4.25,2.75],[2.6,2.75],[2.6,2.4]],              // -> H2 turbine plant
+    [[4.9,4.05],[8.5,4.05],[8.5,2.5]],                          // -> refuelling station
+    [[3.7,4.85],[3.7,7.2],[2.2,7.2],[2.2,8.0]],                 // -> steel works
+    [[4.6,4.85],[4.6,8.0]],                                     // -> ammonia plant
+    [[4.85,4.7],[7.3,4.7],[7.3,7.8]],                           // -> homes (fuel cells)
+    [[7.3,6.85],[11.15,6.85],[11.15,7.5]],                      // -> office towers
+  ];
+  if (P.showPipes){
+    for (const pp of pipes){
+      const pts = pp.map(p => iso(p[0],p[1],0.02));
+      for (const [col,lw] of [[shade(P.pipeColor,-70),6],[P.pipeColor,3.4]]){
+        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1])); ctx.stroke();
+      }
+    }
+    if (P.showFlow){
+      for (let pi=0; pi<pipes.length; pi++){
+        const pp = pipes[pi], seg = [];
+        let tot = 0;
+        for (let i=0;i<pp.length-1;i++){ const l = Math.hypot(pp[i+1][0]-pp[i][0], pp[i+1][1]-pp[i][1]); seg.push(l); tot += l; }
+        const n = Math.max(2, Math.round(tot/0.95));
+        for (let k=0;k<n;k++){
+          const u = (k/n + t*sp + rnd(pi+3)) % 1;
+          let d = u*tot, i = 0;
+          while (i < seg.length-1 && d > seg[i]){ d -= seg[i]; i++; }
+          const f = d/seg[i];
+          const gx = lerp(pp[i][0], pp[i+1][0], f), gy = lerp(pp[i][1], pp[i+1][1], f);
+          const [x,y] = iso(gx,gy,0.18);
+          const a = iso(pp[i+1][0],pp[i+1][1]), b = iso(pp[i][0],pp[i][1]);
+          ctx.globalAlpha = Math.min(1, u/0.05, (1-u)/0.05);
+          drawGasMol(ctx, GASES.H2, x, y, 0.85*kM, Math.atan2(a[1]-b[1], a[0]-b[0]));
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /* ---- everything that stands up, drawn back to front ---- */
+  const items = [];
+  const add = (gx,gy,f) => items.push({d:gx+gy, f});
+
+  // power generation: H2 turbine plant with stacks, storage tanks, wind + solar feeding the electrolyser
+  for (const sx of [1.05, 1.85]) add(sx, 0.95, () => { const [x,y] = cyl(sx,0.95,0.26,2.7,"#e5e7eb",0,[0.78,0.88,P.accent]); steam(sx,0.95,2.75,sx); });
+  add(1.85,1.95, () => {
+    box(0.7,1.3,2.3,1.3,1.05,"#cbd5e1");
+    boxBand(0.7,1.3,2.3,1.3,1.05,0,0.62,0.78,P.accent);
+    windows(0.7,1.3,2.3,1.3,1.05,0,1,4,2,11,"#94a3b8");
+    box(1.0,1.5,0.9,0.6,0.35,"#94a3b8",1.05);         // turbine hall roof unit
+  });
+  for (const [tx,ty] of [[3.85,0.85],[4.75,0.85],[3.85,1.75],[4.75,1.75]])
+    add(tx,ty, () => {
+      const [x,y] = cyl(tx,ty,0.33,0.95,"#f8fafc",0,[0.35,0.55,P.accent]);
+      text(ctx, "H₂", x, y+19, {size:9.5, bold:true, color:"#9a3412"});
+    });
+  for (const [wx,wy,hh] of [[0.9,3.2,2.6],[1.0,4.5,2.3],[2.2,4.75,2.1]])
+    add(wx,wy, () => {
+      const [bx,by] = iso(wx,wy,0), [hx,hy] = iso(wx,wy,hh);
+      ctx.strokeStyle = "#e2e8f0"; ctx.lineWidth = 3.4; ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(hx,hy); ctx.stroke();
+      ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 0.8; ctx.stroke();
+      const rot = TAU*2*sp*t + wx*1.7;
+      for (let k=0;k<3;k++){
+        const a = rot + k*TAU/3;
+        ctx.fillStyle = "#f8fafc"; ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(hx + 2*Math.cos(a+1.6), hy + 2*Math.sin(a+1.6));
+        ctx.lineTo(hx + 30*Math.cos(a), hy + 30*Math.sin(a));
+        ctx.lineTo(hx + 2*Math.cos(a-1.6), hy + 2*Math.sin(a-1.6));
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      ctx.fillStyle = "#64748b"; ctx.beginPath(); ctx.arc(hx,hy,2.6,0,TAU); ctx.fill();
+    });
+  for (let r=0;r<3;r++){
+    const gx = 2.0 + r*0.55;
+    add(gx+0.2, 3.5, () => {
+      const p = [iso(gx,3.0,0.15), iso(gx+0.4,3.0,0.45), iso(gx+0.4,4.0,0.45), iso(gx,4.0,0.15)];
+      poly(p, "#1e3a8a", "#cbd5e1", 1);
+      for (let k=1;k<4;k++){ const f = k/4; line([lerp(p[0][0],p[3][0],f),lerp(p[0][1],p[3][1],f)], [lerp(p[1][0],p[2][0],f),lerp(p[1][1],p[2][1],f)], "#60a5fa", 0.7); }
+      line([lerp(p[0][0],p[1][0],0.5),lerp(p[0][1],p[1][1],0.5)], [lerp(p[3][0],p[2][0],0.5),lerp(p[3][1],p[2][1],0.5)], "#60a5fa", 0.7);
+    });
+  }
+  add(3.4,4.5, () => { box(2.95,4.2,0.9,0.75,0.6,"#e2e8f0"); boxBand(2.95,4.2,0.9,0.75,0.6,0,0.15,0.3,P.pipeColor); });
+  add(hub[0],hub[1], () => {
+    for (const [lx,ly] of [[-0.35,-0.35],[0.35,-0.35],[-0.35,0.35],[0.35,0.35]]){
+      const a = iso(hub[0]+lx,hub[1]+ly,0), b = iso(hub[0]+lx*0.6,hub[1]+ly*0.6,0.6);
+      line(a, b, "#64748b", 2.4);
+    }
+    const [x,y,R] = sphere(hub[0],hub[1],0.95,0.6,"#e0f2fe");
+    ctx.strokeStyle = P.pipeColor; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(x,y,R*0.98,R*0.3,0,0,Math.PI); ctx.stroke();
+    text(ctx, P.hubLabel, x, y-2, {size:17*kX, bold:true, color:"#0369a1"});
+  });
+
+  // transportation: H2 refuelling station, shop, price pylon, parked vehicles
+  add(10.95,1.5, () => { box(10.4,0.8,1.1,1.4,0.85,"#99f6e4"); windows(10.4,0.8,1.1,1.4,0.85,0,1,3,3,40,"#0f766e"); });
+  add(8.8,2.1, () => {
+    for (const [px,py] of [[7.8,1.6],[9.8,1.6],[7.8,2.6],[9.8,2.6]]) box(px-0.06,py-0.06,0.12,0.12,1.0,"#e2e8f0");
+    for (const px of [8.3, 9.3]){ box(px,1.95,0.28,0.28,0.55,"#0ea5e9"); box(px+0.02,1.97,0.24,0.24,0.05,"#22d3ee",0.55); }
+    box(7.55,1.35,2.5,1.5,0.16,"#f8fafc",1.0);
+    boxBand(7.55,1.35,2.5,1.5,0.16,1.0,0,1,"#14b8a6");
+  });
+  add(11.1,3.3, () => {
+    box(11.05,3.25,0.12,0.12,1.5,"#94a3b8");
+    const [x,y] = iso(11.11,3.31,1.75);
+    ctx.fillStyle = "#14b8a6"; ctx.beginPath(); ctx.arc(x,y,13,0,TAU); ctx.fill();
+    ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 2; ctx.stroke();
+    text(ctx, "H₂", x, y, {size:12, bold:true, color:"#ffffff"});
+  });
+  const parked = [{type:"bus", gx:8.0, gy:3.6, ax:"x", col:"#facc15"}, {type:"car", gx:8.45, gy:2.3, ax:"y", col:"#ef4444"},
+                  {type:"truck", gx:10.3, gy:4.2, ax:"x", col:"#3b82f6"}];
+
+  // industry: steel works with sawtooth roof and chimney, ammonia plant
+  add(1.0,7.25, () => { const [x,y] = cyl(1.0,7.25,0.24,2.4,"#a8a29e",0,[0.82,0.9,"#ef4444"]); steam(1.0,7.25,2.45,7); });
+  add(2.0,8.4, () => {
+    box(0.8,7.6,2.5,1.6,0.85,"#b45309");
+    windows(0.8,7.6,2.5,1.6,0.85,0,1,5,3,70,"#fcd34d");
+    for (let k=0;k<4;k++){                                         // sawtooth roof
+      const x0 = 0.8 + k*0.625, x1 = x0 + 0.625;
+      poly([iso(x0,9.2,0.85),iso(x0,7.6,0.85),iso(x1,7.6,1.25),iso(x1,9.2,1.25)], "#78716c", EDGE);
+      poly([iso(x1,7.6,0.85),iso(x1,9.2,0.85),iso(x1,9.2,1.25),iso(x1,7.6,1.25)], "#bae6fd", EDGE);
+    }
+  });
+  add(4.0,7.55, () => { cyl(4.0,7.55,0.22,2.2,"#e7e5e4",0,[0.1,0.18,P.accent]); });
+  add(4.6,8.0, () => { cyl(4.6,8.0,0.2,1.6,"#e7e5e4",0,[0.1,0.18,P.accent]); });
+  for (const [sx,sy] of [[3.75,9.45],[4.7,9.55]])
+    add(sx,sy, () => {
+      for (const [lx,ly] of [[-0.25,0],[0.25,0],[0,-0.25],[0,0.25]]) line(iso(sx+lx,sy+ly,0), iso(sx+lx*0.6,sy+ly*0.6,0.45), "#64748b", 2);
+      sphere(sx,sy,0.75,0.42,"#f1f5f9");
+    });
+  add(2.9,9.9, () => { box(2.5,9.7,0.8,0.5,0.4,"#e7e5e4"); });
+
+  // buildings: office towers, homes with fuel-cell units
+  // the towers stand at the front corner, where they hide as little as possible
+  const towers = [[10.7,7.05,1.0,1.0,3.0,"#93c5fd",5,3,3],[10.65,8.45,1.05,1.05,3.7,"#e2e8f0",6,3,3],[8.9,9.35,1.4,0.85,1.25,"#60a5fa",2,4,2]];
+  for (const [x,y,w,d,h,col,rows,cl,cr] of towers)
+    add(x+w/2,y+d/2, () => {
+      box(x,y,w,d,h,col);
+      windows(x,y,w,d,h,0,rows,cl,cr,Math.round(x*100+y),"#1e40af");
+      box(x+w*0.3,y+d*0.3,w*0.35,d*0.35,0.25,"#94a3b8",h);
+    });
+  const houses = [[7.0,7.35,1.0,0.8,"#fef3c7","#dc2626"],[7.4,8.85,1.0,0.8,"#e0f2fe","#9a3412"]];
+  for (const [x,y,w,d,wall,roof] of houses)
+    add(x+w/2,y+d/2, () => {
+      const h = 0.55, hr = 0.45;
+      box(x,y,w,d,h,wall);
+      windows(x,y,w,d,h,0,1,2,1,Math.round(x*13+y*7),"#38bdf8");
+      poly([iso(x,y,h),iso(x+w,y,h),iso(x+w,y+d/2,h+hr),iso(x,y+d/2,h+hr)], shade(roof,-30), EDGE);
+      poly([iso(x+w,y,h),iso(x+w,y+d,h),iso(x+w,y+d/2,h+hr)], shade(wall,-40), EDGE);
+      poly([iso(x,y+d,h),iso(x+w,y+d,h),iso(x+w,y+d/2,h+hr),iso(x,y+d/2,h+hr)], roof, EDGE);
+      // fuel-cell unit beside the house, glowing as it runs
+      const fx = x+w+0.08, fy = y+d-0.35;
+      box(fx,fy,0.3,0.3,0.38,"#f8fafc");
+      const [gxp,gyp] = iso(fx+0.3,fy+0.15,0.2);
+      ctx.globalAlpha = 0.55 + 0.45*Math.sin(TAU*sp*t + x);
+      ctx.fillStyle = P.pipeColor; ctx.beginPath(); ctx.arc(gxp-4,gyp,3.2,0,TAU); ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+
+  // trees
+  const trees = [[0.5,5.0],[1.8,5.05],[3.2,0.5],[6.9,0.5],[7.0,1.1],[11.5,4.7],[10.8,4.95],[11.5,0.5],
+                 [0.5,10.3],[1.4,10.25],[4.95,10.3],[8.9,7.5],[9.7,8.0],[7.0,10.2],[8.4,10.3],[11.6,10.3],
+                 [0.6,11.8],[2.0,11.75],[3.4,11.8],[8.2,11.8],[9.7,11.75],[11.2,11.8],[9.9,9.0],[8.6,8.6]];
+  for (const [x,y] of trees) add(x,y, () => tree(x,y, 0.9 + 0.25*rnd(x*3+y)));
+
+  /* ---- traffic ---- */
+  const veh = (type, gx, gy, ax, col, dir=1) => {
+    const L = type === "bus" ? 1.45 : type === "truck" ? 1.55 : 0.8, Wd = type === "car" ? 0.4 : 0.46;
+    const w = ax === "x" ? L : Wd, d = ax === "x" ? Wd : L, x = gx - w/2, y = gy - d/2;
+    if (type === "car"){
+      box(x,y,w,d,0.26,col,0.04);
+      const cw = ax === "x" ? 0.42 : Wd*0.86, cd = ax === "x" ? Wd*0.86 : 0.42;
+      box(gx-cw/2, gy-cd/2, cw, cd, 0.2, "#bfdbfe", 0.3, shade(col,10));
+    } else if (type === "bus"){
+      box(x,y,w,d,0.55,col,0.04);
+      windows(x,y,w,d,0.55,0.04,1,ax === "x" ? 5 : 1,ax === "x" ? 1 : 5,Math.round(gx*7),"#1e3a8a");
+      const [bx,by] = iso(gx,gy,0.62);
+      ctx.fillStyle = P.pipeColor; ctx.beginPath(); ctx.ellipse(bx,by,7,3.5,0,0,TAU); ctx.fill();
+    } else {
+      const cab = 0.45, tl = L - cab - 0.05, s = dir;              // cab at the front
+      const cx0 = ax === "x" ? (s > 0 ? x + L - cab : x) : x, cy0 = ax === "y" ? (s > 0 ? y + L - cab : y) : y;
+      const tx0 = ax === "x" ? (s > 0 ? x : x + cab + 0.05) : x, ty0 = ax === "y" ? (s > 0 ? y : y + cab + 0.05) : y;
+      const tw = ax === "x" ? tl : Wd, td = ax === "x" ? Wd : tl;
+      const draw = [() => box(tx0,ty0,tw,td,0.48,"#e5e7eb",0.06), () => box(cx0,cy0,ax==="x"?cab:Wd,ax==="x"?Wd:cab,0.5,col,0.04)];
+      // draw the nearer part last
+      if ((ax === "x" && s > 0) || (ax === "y" && s > 0)) draw.forEach(f => f()); else draw.reverse().forEach(f => f());
+      boxBand(tx0,ty0,tw,td,0.48,0.06,0.35,0.55,P.pipeColor);
+    }
+  };
+  for (const v of parked) add(v.gx, v.gy, () => veh(v.type, v.gx, v.gy, v.ax, v.col, 1));
+  // moving vehicles: x-road traffic crosses the junction at loop phases a quarter
+  // apart from y-road traffic, so they never meet in the middle; the y-road
+  // phases also leave a gap for the train at the level crossing
+  // (phases 1/6 apart: a vehicle is 2.4 units clear of the junction when the
+  // crossing one is in it; the train passes the crossing in the gap the y-road
+  // traffic leaves between phase 0.06 and 0.61)
+  const fleet = [
+    {road:"x", dir: 1, ph:0,     type:"bus",   col:"#facc15"},
+    {road:"y", dir: 1, ph:1/6,   type:"car",   col:"#22c55e"},
+    {road:"x", dir:-1, ph:2/6,   type:"car",   col:"#ef4444"},
+    {road:"y", dir:-1, ph:3/6,   type:"truck", col:"#3b82f6"},
+    {road:"x", dir: 1, ph:4/6,   type:"car",   col:"#f97316"},
+    {road:"y", dir: 1, ph:5/6,   type:"car",   col:"#a855f7"},
+  ];
+  const M = 1.2, LR = N + 2*M;
+  // moving things are clipped to the silhouette of the block (the ground
+  // diamond pushed up), so nothing hangs over the edge as it drives off
+  const inBlock = g => {
+    ctx.save(); ctx.beginPath();
+    [iso(0,N,0),iso(N,N,0),iso(N,0,0),iso(N,0,3),iso(0,0,3),iso(0,N,3)].forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]));
+    ctx.closePath(); ctx.clip(); g(); ctx.restore();
+  };
+  // fade in/out at the two back edges; the front edges cut vehicles off cleanly (clip)
+  const fadeG = g => smooth((g + 0.2)/0.9);
+  for (const v of fleet.slice(0, P.traffic)){
+    const u = (v.ph + t*sp) % 1, s = -M + u*LR, along = v.dir > 0 ? s : N - s;
+    const lane = v.road === "x" ? (v.dir > 0 ? 6.3 : 5.7) : (v.dir > 0 ? 5.7 : 6.3);
+    const gx = v.road === "x" ? along : lane, gy = v.road === "x" ? lane : along;
+    const al = fadeG(along);
+    if (al <= 0.01) continue;
+    add(gx, gy, () => inBlock(() => { ctx.globalAlpha = al; veh(v.type, gx, gy, v.road, v.col, v.dir); ctx.globalAlpha = 1; }));
+  }
+  // train: two coaches along the rail at the front
+  if (P.showTrain){
+    const CL = 2.0, GAP = 0.12, LT = 2*CL + GAP, LTR = N + LT + 2;
+    const head = -1 + ((0.166 + t*sp) % 1)*LTR;
+    for (let c=0;c<2;c++){
+      const x1 = head - c*(CL+GAP), x0 = x1 - CL, xm = (x0+x1)/2;
+      const al = smooth((x0 + 0.3)/1.0);
+      if (al <= 0.01) continue;
+      add(xm, 11.0, () => inBlock(() => {
+        ctx.globalAlpha = al;
+        box(x0,10.78,CL,0.44,0.55,"#f8fafc",0.05);
+        boxBand(x0,10.78,CL,0.44,0.55,0.05,0.12,0.26,"#dc2626");
+        windows(x0,10.78,CL,0.44,0.55,0.05,1,6,1,c*50+3,"#1e3a8a");
+        if (c === 0){ const [bx,by] = iso(x1-0.4,11.0,0.62); ctx.fillStyle = P.pipeColor; ctx.beginPath(); ctx.ellipse(bx,by,7,3.5,0,0,TAU); ctx.fill(); }
+        ctx.globalAlpha = 1;
+      }));
+    }
+  }
+
+  items.sort((a,b) => a.d - b.d);
+  for (const it of items) it.f();
+
+  /* ---- small tags on the users of H2 ---- */
+  { const p = iso(1.9,1.9,1.7); tag(P.tagPower, p[0], p[1]-6, "#9a3412"); }
+  { const p = iso(8.8,2.1,1.5); tag(P.tagStation, p[0], p[1]-6, "#0f766e"); }
+  { const p = iso(2.0,8.4,1.6); tag(P.tagSteel, p[0], p[1]-4, "#92400e"); }
+  { const p = iso(4.2,9.5,1.6); tag(P.tagNH3, p[0], p[1]-4, "#475569"); }
+  { const p = iso(7.5,7.75,1.5); tag(P.tagFC, p[0], p[1]-4, "#0369a1"); }
+
+  /* ---- sector titles ---- */
+  const sz = 26*kX;
+  text(ctx, P.powerLabel, 190, 175, {size:sz, bold:true, color:"#0f172a"});
+  text(ctx, P.transLabel, 715, 175, {size:sz, bold:true, color:"#0f172a"});
+  text(ctx, P.indLabel, 165, 545, {size:sz, bold:true, color:"#0f172a"});
+  text(ctx, P.bldLabel, 740, 545, {size:sz, bold:true, color:"#0f172a"});
+  if (P.title) text(ctx, P.title, VW/2, 30*kX, {size:24*kX, bold:true, color:"#0f172a"});
+  ctx.restore();
+}
+
+/* ===================== amine scrubbing (absorber + stripper) ===================== */
+function polyAt(pts, u){                               // point + heading at fraction u of a polyline
+  return pointDir(pts, clamp(u,0,1)*plen(pts));
+}
+function ballShade(ctx,x,y,r,hex,alpha=1){
+  if (alpha <= 0.01) return;
+  const g = ctx.createRadialGradient(x-r*0.38, y-r*0.38, r*0.08, x, y, r);
+  g.addColorStop(0, mixColor(hex, "#ffffff", 0.65)); g.addColorStop(0.55, hex); g.addColorStop(1, shade(hex,-55));
+  ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); ctx.restore();
+}
+function drawAmine(ctx,t,P,W,H){
+  const s = W/800, ms = s*P.molSize/100*1.25, ts = s*P.textSize/100;
+  const gA = GASES.H2, gB = GASES.CO2;
+  const col = P.colColor, lean = P.leanColor, rich = P.richColor;
+  // geometry
+  const A = {x0:115*s, x1:235*s, y0:95*s, y1:440*s};        // absorber
+  const S = {x0:555*s, x1:675*s, y0:95*s, y1:400*s};        // stripper
+  const R = {x0:570*s, x1:660*s, y0:418*s, y1:478*s};       // reboiler
+  const ax = (A.x0+A.x1)/2, sx = (S.x0+S.x1)/2;
+  const HX = {x0:338*s, x1:452*s, y0:255*s, y1:320*s};
+  const pipeW = 9*s*P.pipeSize/100;
+  const richPath = [[ax, A.y1], [ax, 500*s], [358*s, 500*s], [358*s, HX.y1], [432*s, HX.y0], [432*s, 120*s], [S.x0, 120*s]];
+  const leanPath = [[sx+22*s, R.y1], [sx+22*s, 530*s], [432*s, 530*s], [432*s, HX.y1+0.01], [358*s, HX.y0],
+                    [358*s, 62*s], [ax+18*s, 62*s], [ax+18*s, A.y0]];
+  const feedPath = [[18*s, 405*s], [A.x0, 405*s]];
+  const h2Path = [[ax-22*s, A.y0], [ax-22*s, 38*s], [18*s, 38*s]];
+  const co2Path = [[sx, S.y0], [sx, 38*s], [785*s, 38*s]];
+  const steamPath = [[785*s, 448*s], [R.x1, 448*s]];
+
+  const pipe = (pts, flow, dir, dash) => {
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = pipeW + 4*s;
+    ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1])); ctx.stroke();
+    ctx.strokeStyle = mixColor(flow, "#ffffff", 0.55); ctx.lineWidth = pipeW;
+    ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1])); ctx.stroke();
+    if (dash){
+      const per = 26*s;
+      ctx.save(); ctx.setLineDash([12*s, per-12*s]); ctx.lineDashOffset = -dir*t*per*P.speed*6;
+      ctx.strokeStyle = flow; ctx.lineWidth = pipeW*0.55; ctx.lineCap = "butt";
+      ctx.beginPath(); pts.forEach((p,i) => i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1])); ctx.stroke();
+      ctx.restore();
+    }
+  };
+  pipe(feedPath, "#94a3b8", 1, false);
+  pipe(h2Path, gA.tint, 1, false);
+  pipe(co2Path, gB.tint, 1, false);
+  pipe(richPath, rich, 1, true);
+  pipe(leanPath, lean, 1, true);
+  pipe(steamPath, "#ef4444", 1, true);
+
+  // columns
+  const column = (c, label) => {
+    ctx.fillStyle = "#f8fafc"; ctx.strokeStyle = col; ctx.lineWidth = 3*s;
+    ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(c.x0, c.y0, c.x1-c.x0, c.y1-c.y0, 26*s); else ctx.rect(c.x0,c.y0,c.x1-c.x0,c.y1-c.y0);
+    ctx.fill();
+    // packing: light cross-hatch band
+    ctx.save(); ctx.beginPath(); ctx.rect(c.x0+4*s, c.y0+55*s, c.x1-c.x0-8*s, c.y1-c.y0-110*s); ctx.clip();
+    ctx.strokeStyle = mixColor(col, "#ffffff", 0.78); ctx.lineWidth = 1.2*s;
+    for (let k=-20;k<40;k++){ const x = c.x0 + k*14*s;
+      ctx.beginPath(); ctx.moveTo(x, c.y0); ctx.lineTo(x+(c.y1-c.y0), c.y1); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+(c.y1-c.y0), c.y0); ctx.lineTo(x, c.y1); ctx.stroke(); }
+    ctx.restore();
+    ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(c.x0, c.y0, c.x1-c.x0, c.y1-c.y0, 26*s); else ctx.rect(c.x0,c.y0,c.x1-c.x0,c.y1-c.y0);
+    ctx.stroke();
+  };
+  column(A); column(S);
+  // reboiler with heat glow
+  const glow = 0.5 + 0.5*Math.sin(2*Math.PI*t*3);
+  ctx.fillStyle = mixColor("#fecaca", "#fca5a5", glow); ctx.strokeStyle = col; ctx.lineWidth = 3*s;
+  ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(R.x0, R.y0, R.x1-R.x0, R.y1-R.y0, 14*s); else ctx.rect(R.x0,R.y0,R.x1-R.x0,R.y1-R.y0);
+  ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = "#dc2626"; ctx.lineWidth = 2.5*s; ctx.beginPath();
+  for (let k=0;k<=24;k++){ const x = R.x0+10*s + k*(R.x1-R.x0-20*s)/24, y = 452*s + (k%2 ? -8 : 8)*s; k ? ctx.lineTo(x,y) : ctx.moveTo(x,y); }
+  ctx.stroke();
+  // stripper -> reboiler neck
+  ctx.strokeStyle = col; ctx.lineWidth = 3*s; ctx.beginPath(); ctx.moveTo(sx-14*s, S.y1); ctx.lineTo(sx-14*s, R.y0);
+  ctx.moveTo(sx+14*s, S.y1); ctx.lineTo(sx+14*s, R.y0); ctx.stroke();
+  // cross heat exchanger
+  ctx.fillStyle = "#ffffff"; ctx.strokeStyle = col; ctx.lineWidth = 3*s;
+  ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(HX.x0, HX.y0, HX.x1-HX.x0, HX.y1-HX.y0, 10*s); else ctx.rect(HX.x0,HX.y0,HX.x1-HX.x0,HX.y1-HX.y0);
+  ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = mixColor(lean, rich, 0.5); ctx.lineWidth = 2.5*s; ctx.beginPath();
+  for (let k=0;k<=10;k++){ const x = HX.x0+12*s + k*(HX.x1-HX.x0-24*s)/10, y = (HX.y0+HX.y1)/2 + (k%2 ? -14 : 14)*s; k ? ctx.lineTo(x,y) : ctx.moveTo(x,y); }
+  ctx.stroke();
+  // pump on the lean line
+  const pmx = 540*s, pmy = 530*s;
+  ctx.fillStyle = "#ffffff"; ctx.strokeStyle = col; ctx.lineWidth = 2.5*s;
+  ctx.beginPath(); ctx.arc(pmx, pmy, 13*s, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(pmx+7*s, pmy); ctx.lineTo(pmx-5*s, pmy-7*s); ctx.lineTo(pmx-5*s, pmy+7*s); ctx.closePath(); ctx.fill();
+
+  // falling liquid droplets in both columns (lean -> rich in absorber, rich -> lean in stripper)
+  const nDrop = 16;
+  for (const [c, cTop, cBot] of [[A, lean, rich], [S, rich, lean]]){
+    for (let i=0;i<nDrop;i++){
+      const q = (c === A ? 300 : 500) + i*7;
+      const u = (rnd(q) + t*P.speed*2) % 1;
+      const x = c.x0 + 16*s + rnd(q+1)*(c.x1-c.x0-32*s);
+      const y = c.y0 + 30*s + u*(c.y1-c.y0-50*s);
+      const a = smooth(u/0.08)*smooth((1-u)/0.08);
+      ctx.save(); ctx.globalAlpha = 0.85*a; ctx.fillStyle = mixColor(cTop, cBot, u);
+      ctx.beginPath(); ctx.ellipse(x, y, 3.2*s, 4.6*s, 0, 0, 7); ctx.fill(); ctx.restore();
+    }
+  }
+  // steam bubbles in the reboiler
+  for (let i=0;i<7;i++){
+    const u = (rnd(900+i) + t*P.speed*3) % 1;
+    const x = R.x0 + 14*s + rnd(901+i*3)*(R.x1-R.x0-28*s), y = R.y1 - 6*s - u*(R.y1-R.y0-10*s);
+    ctx.save(); ctx.globalAlpha = 0.7*smooth(u/0.2)*smooth((1-u)/0.2);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5*s; ctx.beginPath(); ctx.arc(x, y, 3.5*s, 0, 7); ctx.stroke(); ctx.restore();
+  }
+
+  // H2: feed -> up the absorber -> overhead product
+  for (let i=0;i<P.nA;i++){
+    const q = 40 + i*11, u = (rnd(q) + t*P.speed) % 1;
+    const xin = A.x0 + 18*s + rnd(q+1)*(A.x1-A.x0-36*s);
+    const pts = [[-30*s, 405*s + (rnd(q+2)-0.5)*14*s], [A.x0+8*s, 405*s], [xin, 380*s], [xin + (rnd(q+3)-0.5)*30*s, 200*s],
+                 [ax-22*s, A.y0+14*s], [ax-22*s, 38*s], [-30*s, 38*s]];
+    const [x,y,ang] = polyAt(pts, u);
+    const a = smooth(u/0.04)*smooth((1-u)/0.04);
+    ctx.save(); ctx.globalAlpha = a; drawGasMol(ctx, gA, x, y, ms, ang + Math.PI/2); ctx.restore();
+  }
+  // CO2: feed -> rises, captured by the amine -> rich line -> stripper -> released by steam -> CO2 product
+  for (let i=0;i<P.nB;i++){
+    const q = 700 + i*13, u = (rnd(q) + t*P.speed) % 1;
+    const xin = A.x0 + 18*s + rnd(q+1)*(A.x1-A.x0-36*s);
+    const yCap = 360*s - rnd(q+2)*170*s;
+    const xs = S.x0 + 20*s + rnd(q+3)*(S.x1-S.x0-40*s);
+    const yRel = 170*s + rnd(q+4)*150*s;
+    const pts = [[-30*s, 405*s + (rnd(q+5)-0.5)*14*s], [A.x0+8*s, 405*s], [xin, 385*s], [xin, yCap],          // gas, rising
+                 [xin + 6*s, A.y1 - 8*s], [ax, A.y1], ...richPath.slice(1), [xs, 130*s], [xs, yRel],          // dissolved
+                 [xs, S.y0 + 20*s], [sx, S.y0 + 6*s], [sx, 38*s], [830*s, 38*s]];                              // released
+    const Ltot = plen(pts);
+    const L1 = plen(pts.slice(0, 4));
+    const iRel = pts.length - 5;                     // index of [xs, yRel]
+    const Lrel = plen(pts.slice(0, iRel + 1));
+    const d = u*Ltot;
+    const [x,y,ang] = pointDir(pts, d);
+    const a = smooth(u/0.03)*smooth((1-u)/0.03);
+    const bound = d > L1 && d < Lrel;
+    ctx.save(); ctx.globalAlpha = a;
+    if (bound){                                        // carried as carbamate in the liquid: small, ringed
+      ctx.fillStyle = rgbaHex(rich, 0.45); ctx.beginPath(); ctx.arc(x, y, 9*ms, 0, 7); ctx.fill();
+      drawGasMol(ctx, gB, x, y, ms*0.62, 0);
+    } else drawGasMol(ctx, gB, x, y, ms, ang + Math.PI/2);
+    ctx.restore();
+  }
+
+  // labels
+  const lab = (str, x, y, o={}) => text(ctx, str, x, y, {size:(o.size||15)*ts, bold:o.bold, color:o.color||"#334155", align:o.align||"center"});
+  lab(P.absLabel, A.x0 - 8*s, 462*s, {bold:true, size:16, align:"right"});
+  lab(P.strLabel, sx - 70*s, 230*s, {bold:true, size:16, align:"right"});
+  lab(P.rebLabel, (R.x0+R.x1)/2, R.y1 + 16*ts, {size:14, color:"#b91c1c"});
+  lab(P.hxLabel, HX.x0 - 8*s, (HX.y0+HX.y1)/2, {size:13, align:"right"});
+  lab(P.feedLabel === "auto" ? "H₂ + CO₂" : P.feedLabel, 20*s, 388*s, {bold:true, align:"left", color:"#475569"});
+  lab(P.h2Label === "auto" ? "H₂" : P.h2Label, 20*s, 21*s, {bold:true, align:"left", color:gA.tint});
+  lab(P.co2Label === "auto" ? "CO₂ to compression" : P.co2Label, 785*s, 21*s, {bold:true, align:"right", color:gB.tint});
+  lab(P.leanLabel, 300*s, 62*s - 14*ts, {size:13, color:shade(lean,-40)});
+  lab(P.richLabel, 265*s, 500*s + 16*ts, {size:13, color:shade(rich,-50)});
+  lab(P.steamLabel, 785*s, 448*s - 16*ts, {size:13, color:"#b91c1c", align:"right"});
+}
+
+/* ===================== gas transport mechanisms (six panels, one per mode) ===================== */
+function drawMech(ctx,t,P,W,H){
+  const s = W/600, ts = s*P.textSize/100;
+  const rS = 7*s*P.molSize/100, rL = 12*s*P.molSize/100;  // small (red) and large (purple) molecules
+  const cS = P.smallColor, cL = P.bigColor;
+  const yT = 150*s, yB = 285*s;
+  const mode = P.mode;
+  const pillar = (x0, x1, y0, y1) => {
+    const g = ctx.createLinearGradient(x0, 0, x1, 0);
+    g.addColorStop(0, mixColor(P.wallColor, "#ffffff", 0.35)); g.addColorStop(0.42, mixColor(P.wallColor, "#ffffff", 0.62));
+    g.addColorStop(1, shade(P.wallColor, -45));
+    ctx.fillStyle = g; ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x0, y0, x1-x0, y1-y0, 3*s); else ctx.rect(x0, y0, x1-x0, y1-y0);
+    ctx.fill();
+  };
+  const fadeU = (u, f=0.07) => smooth(u/f)*smooth((1-u)/f);
+  const feedWander = (n, r, col, seed) => {                      // retained molecules jostling in the feed
+    for (let i=0;i<n;i++){
+      const q = seed + i*17;
+      const x = 40*s + rnd(q)*(W-80*s) + 14*s*Math.sin(2*Math.PI*(t*(1+Math.floor(rnd(q+1)*2)) + rnd(q+2)));
+      const y = 35*s + rnd(q+3)*(yT-60*s - r) + 9*s*Math.sin(2*Math.PI*(t*(1+Math.floor(rnd(q+4)*2)) + rnd(q+5)));
+      ballShade(ctx, x, y, r, col);
+    }
+  };
+  const runPath = (pts, r, col, k, q) => {                       // one molecule looping k times per GIF loop
+    const u = (rnd(q) + t*k*P.speed) % 1;
+    const [x, y] = polyAt(pts, u);
+    ballShade(ctx, x, y, r, col, fadeU(u));
+  };
+  const feedStart = q => [40*s + rnd(q)*(W-80*s), 20*s + rnd(q+1)*50*s];
+  const permEnd = q => [40*s + rnd(q+2)*(W-80*s), H - 20*s - rnd(q+3)*40*s];
+  // pillar rows shared by the porous modes
+  const rowOf = (n, wp, g) => {
+    const tot = n*wp + (n-1)*g, x0 = (W - tot)/2, pores = [];
+    for (let i=0;i<n;i++) pillar(x0 + i*(wp+g), x0 + i*(wp+g) + wp, yT, yB);
+    for (let i=0;i<n-1;i++) pores.push([x0 + i*(wp+g) + wp, x0 + (i+1)*(wp+g)]);
+    return pores;
+  };
+  const showLab = P.showLabels;
+
+  if (mode === "viscous"){
+    const gL = 250*s, gR = 350*s;
+    pillar(70*s, gL, yT, yB); pillar(gR, 530*s, yT, yB);
+    // parabolic velocity profile
+    const xc = (gL+gR)/2, half = (gR-gL)/2;
+    for (let k=-3;k<=3;k++){
+      const x = xc + k*half/3.6, L = 95*s*(1 - (k/3.6)**2);
+      arrow(ctx, x, yT + 8*s, x, yT + 8*s + L, "#1e3a8a", 2.2*s, 7*s);
+    }
+    ctx.save(); ctx.setLineDash([4*s, 4*s]); ctx.strokeStyle = "#1e3a8a"; ctx.lineWidth = 1.4*s; ctx.beginPath();
+    for (let k=0;k<=40;k++){ const xx = gL + 4*s + k*(gR-gL-8*s)/40, v = 1 - ((xx-xc)/half)**2; const yy = yT + 12*s + 95*s*v;
+      k ? ctx.lineTo(xx, yy) : ctx.moveTo(xx, yy); }
+    ctx.stroke(); ctx.restore();
+    if (showLab){ arrow(ctx, 30*s, 25*s, 30*s, H-25*s, "#334155", 2*s, 9*s); text(ctx, "Δp", 46*s, 32*s, {size:16*ts, italic:true, color:"#334155", align:"left"}); }
+    for (let i=0;i<14;i++){
+      const q = 50 + i*9, big = i % 3 === 0, r = big ? rL : rS;
+      const xg = xc + (rnd(q+5)-0.5)*(gR-gL-2*r-6*s);
+      const k = Math.abs(xg-xc) < half*0.45 ? 2 : 1;
+      runPath([feedStart(q), [xg, yT - 6*s], [xg, yB + 6*s], permEnd(q)], r, big ? cL : cS, k, q);
+    }
+  } else if (mode === "knudsen"){
+    const pores = rowOf(6, 36*s, 46*s);
+    for (let i=0;i<10;i++){
+      const q = 80 + i*13, big = i % 2 === 1, r = big ? rL : rS;
+      const [a, b] = pores[Math.floor(rnd(q+6)*pores.length)];
+      const pts = [feedStart(q), [(a+b)/2, yT - 8*s]];
+      const steps = 5;
+      for (let k=1;k<=steps;k++) pts.push([k % 2 ? a + r + 1*s : b - r - 1*s, yT + (yB-yT)*k/(steps+1)]);
+      pts.push([(a+b)/2, yB + 8*s], permEnd(q));
+      runPath(pts, r, big ? cL : cS, big ? 1 : 2, q);
+    }
+  } else if (mode === "sieving"){
+    const pores = rowOf(6, 52*s, 2*rS + 6*s);
+    for (let i=0;i<8;i++){
+      const q = 120 + i*13, [a, b] = pores[i % pores.length], xc = (a+b)/2;
+      runPath([feedStart(q), [xc, yT - 10*s], [xc, yB + 10*s], permEnd(q)], rS, cS, 2, q);
+    }
+    for (let i=0;i<6;i++){                                       // large molecules bounce off the pore mouths
+      const q = 160 + i*19, [a, b] = pores[Math.floor(rnd(q+7)*pores.length)], xc = (a+b)/2;
+      const [x0, y0] = feedStart(q), x1 = 40*s + rnd(q+8)*(W-80*s);
+      runPath([[x0, y0], [xc, yT - rL - 1*s], [x1, 25*s + rnd(q+9)*40*s]], rL, cL, 1, q);
+    }
+  } else if (mode === "solution"){
+    const x0 = 70*s, x1 = 530*s;
+    const g = ctx.createLinearGradient(0, yT, 0, yB);
+    g.addColorStop(0, mixColor(P.densColor, "#ffffff", 0.45)); g.addColorStop(1, P.densColor);
+    ctx.fillStyle = g; ctx.strokeStyle = shade(P.densColor, -40); ctx.lineWidth = 1.5*s;
+    ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x0, yT, x1-x0, yB-yT, 6*s); else ctx.rect(x0, yT, x1-x0, yB-yT);
+    ctx.fill(); ctx.stroke();
+    if (showLab){
+      arrow(ctx, 150*s, yT - 48*s, 150*s, yT - 6*s, "#334155", 2*s, 8*s);
+      text(ctx, "sorption", 162*s, yT - 30*s, {size:14*ts, italic:true, color:"#334155", align:"left"});
+      ctx.save(); ctx.setLineDash([5*s, 4*s]); ctx.strokeStyle = "#334155"; ctx.lineWidth = 2*s; ctx.beginPath();
+      ctx.moveTo(150*s, yT + 12*s); ctx.bezierCurveTo(175*s, yT + 45*s, 125*s, yT + 80*s, 150*s, yB - 18*s); ctx.stroke(); ctx.restore();
+      arrow(ctx, 149*s, yB - 26*s, 150*s, yB - 12*s, "#334155", 2*s, 8*s);
+      text(ctx, "diffusion", 172*s, (yT+yB)/2, {size:14*ts, italic:true, color:"#334155", align:"left"});
+      arrow(ctx, 150*s, yB + 6*s, 150*s, yB + 46*s, "#334155", 2*s, 8*s);
+      text(ctx, "desorption", 162*s, yB + 28*s, {size:14*ts, italic:true, color:"#334155", align:"left"});
+    }
+    for (let i=0;i<12;i++){
+      const q = 200 + i*11, big = i % 3 === 2, r = big ? rL : rS;
+      const xe = 230*s + rnd(q+6)*270*s, pts = [feedStart(q), [xe, yT - r]];
+      let xx = xe;
+      for (let k=1;k<=4;k++){ xx = clamp(xx + (rnd(q+10+k)-0.5)*50*s, x0 + 20*s, x1 - 20*s); pts.push([xx, yT + (yB-yT)*k/5]); }
+      pts.push([xx, yB + r], permEnd(q));
+      runPath(pts, r, big ? cL : cS, big ? 1 : 2, q);
+    }
+  } else if (mode === "surface"){
+    const pores = rowOf(6, 36*s, 46*s);
+    // adsorbed layer lining every pore wall
+    for (const [a, b] of pores){
+      for (let y = yT + rS; y < yB; y += 2*rS + 2*s){
+        const jig = 1.2*s*Math.sin(2*Math.PI*(t*2 + y*0.07));
+        ballShade(ctx, a + rS + 1*s + jig, y, rS, cS, 0.95);
+        ballShade(ctx, b - rS - 1*s - jig, y + rS, rS, cS, 0.95);
+      }
+      if (showLab){
+        ctx.save(); ctx.setLineDash([3*s, 3*s]); ctx.strokeStyle = shade(cS, -30); ctx.lineWidth = 1.4*s;
+        for (const xw of [a + 2*rS + 5*s, b - 2*rS - 5*s]){ ctx.beginPath(); ctx.moveTo(xw, yT + 14*s); ctx.lineTo(xw, yB - 14*s); ctx.stroke(); }
+        ctx.restore();
+      }
+    }
+    // mobile adsorbed molecules hop down the walls
+    for (let i=0;i<10;i++){
+      const q = 260 + i*13, [a, b] = pores[i % pores.length], left = i % 2 === 0;
+      const xw = left ? a + 3*rS + 3*s : b - 3*rS - 3*s;
+      const u = (rnd(q) + t*P.speed) % 1;
+      const pts = [feedStart(q), [xw, yT - rS]];
+      const nH = 6;
+      let x, y;
+      const d0 = u*1.0;
+      // phases: approach (0-0.25), hop down the wall (0.25-0.8, stepwise), leave (0.8-1)
+      if (d0 < 0.25){ [x, y] = polyAt(pts, d0/0.25); }
+      else if (d0 < 0.8){
+        const f = (d0-0.25)/0.55*nH, k = Math.min(Math.floor(f), nH-1), fr = smooth(clamp((f-k-0.55)/0.45, 0, 1));
+        x = xw; y = yT - rS + (yB - yT + 2*rS)*(k + fr)/nH;
+      } else { [x, y] = polyAt([[xw, yB + rS], permEnd(q)], (d0-0.8)/0.2); }
+      ballShade(ctx, x, y, rS, cS, fadeU(u, 0.05));
+    }
+    feedWander(7, rL, cL, 330);
+  } else if (mode === "capillary"){
+    const pores = rowOf(6, 36*s, 46*s);
+    for (const [a, b] of pores){
+      ctx.fillStyle = rgbaHex(cS, 0.20);
+      ctx.beginPath(); ctx.ellipse((a+b)/2, yT, (b-a)/2 + 10*s, 12*s, 0, Math.PI, 0); ctx.fill();
+      ctx.beginPath(); ctx.ellipse((a+b)/2, yB, (b-a)/2 + 10*s, 12*s, 0, 0, Math.PI); ctx.fill();
+      ctx.fillRect(a, yT, b-a, yB-yT);
+      for (let y = yT + rS + 1*s; y < yB - rS; y += 2*rS + 1*s){
+        ballShade(ctx, a + rS + 1*s, y, rS, cS, 0.9); ballShade(ctx, b - rS - 1*s, y + rS*0.6, rS, cS, 0.9);
+      }
+      if (showLab){
+        arrow(ctx, (a+b)/2, yT - 52*s, (a+b)/2, yT - 16*s, shade(cS, -20), 2.2*s, 8*s);
+        arrow(ctx, (a+b)/2, yB + 16*s, (a+b)/2, yB + 52*s, shade(cS, -20), 2.2*s, 8*s);
+      }
+    }
+    for (let i=0;i<10;i++){
+      const q = 400 + i*13, [a, b] = pores[i % pores.length], xc = (a+b)/2;
+      runPath([feedStart(q), [xc, yT - 14*s], [xc, yB + 14*s], permEnd(q)], rS, cS, 2, q);
+    }
+    feedWander(6, rL, cL, 470);
+  }
+  if (mode !== "viscous" && mode !== "knudsen" && mode !== "solution"){
+    // a few small molecules waiting in the feed
+    feedWander(4, rS, cS, 520);
+  }
+}
+
+/* ===================== membrane basics: feed / membrane / permeate ===================== */
+function drawMembBasics(ctx,t,P,W,H){
+  const s = W/680, ts = s*P.textSize/100;
+  const rS = 7.5*s*P.molSize/100, rL = 13*s*P.molSize/100;
+  const cS = P.smallColor, cL = P.bigColor;
+  const X0 = 40*s, X1 = 545*s;                                  // membrane span
+  const yM0 = 250*s, yM1 = 318*s;                               // membrane top / bottom
+  const yF0 = 62*s, yP1 = 462*s;                                // feed top, permeate bottom
+  const k = P.speed;
+  const fadeU = (u, f=0.06) => smooth(u/f)*smooth((1-u)/f);
+  const TAU2 = 2*Math.PI;
+  // ---- pressure zones (tint: dense feed, dilute permeate)
+  if (P.showZones){
+    const g = ctx.createLinearGradient(0, yF0 - 12*s, 0, yM0);
+    g.addColorStop(0, mixColor(P.feedTint, "#ffffff", 0.15)); g.addColorStop(1, P.feedTint);
+    ctx.fillStyle = g; ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(X0, yF0 - 12*s, X1-X0, yM0 - yF0 + 12*s, [10*s, 10*s, 0, 0]); else ctx.rect(X0, yF0 - 12*s, X1-X0, yM0 - yF0 + 12*s);
+    ctx.fill();
+    ctx.fillStyle = mixColor(P.feedTint, "#ffffff", 0.6); ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(X0, yM1, X1-X0, yP1 - yM1 + 6*s, [0, 0, 10*s, 10*s]); else ctx.rect(X0, yM1, X1-X0, yP1 - yM1 + 6*s);
+    ctx.fill();
+  }
+  // ---- crowded feed: jostling molecules (seamless: integer frequencies)
+  const jostle = (n, r, col, seed) => {
+    for (let i=0;i<n;i++){
+      const q = seed + i*13;
+      const fx = 1 + Math.floor(rnd(q+1)*2), fy = 1 + Math.floor(rnd(q+4)*2);
+      const x = X0 + 22*s + rnd(q)*(X1-X0-44*s) + 13*s*Math.sin(TAU2*(t*fx*k + rnd(q+2)));
+      const y = yF0 + 8*s + rnd(q+3)*(yM0 - yF0 - 34*s) + 9*s*Math.sin(TAU2*(t*fy*k + rnd(q+5)));
+      ballShade(ctx, x, y, r, col);
+    }
+  };
+  jostle(P.nFeedBig, rL, cL, 300);
+  jostle(P.nFeedSmall, rS, cS, 500);
+  // ---- large molecules that hit the membrane and bounce back
+  for (let i=0;i<P.nBounce;i++){
+    const q = 700 + i*11, u = (rnd(q) + t*k) % 1;
+    const x = X0 + 40*s + rnd(q+1)*(X1-X0-80*s) + 16*s*Math.sin(TAU2*u);
+    const tri = 1 - Math.abs(2*u - 1);                          // 0 → 1 (at the membrane) → 0
+    const y = lerp(yF0 + 30*s + rnd(q+2)*40*s, yM0 - rL - 1*s, Math.pow(tri, 0.8));
+    ballShade(ctx, x, y, rL, cL);
+  }
+  // ---- membrane slab
+  const g = ctx.createLinearGradient(0, yM0, 0, yM1);
+  g.addColorStop(0, mixColor(P.membColor, "#ffffff", 0.35)); g.addColorStop(0.5, P.membColor); g.addColorStop(1, shade(P.membColor, -25));
+  ctx.fillStyle = g; ctx.fillRect(X0, yM0, X1-X0, yM1-yM0);
+  ctx.strokeStyle = P.edgeColor; ctx.lineWidth = 2*s; ctx.strokeRect(X0, yM0, X1-X0, yM1-yM0);
+  text(ctx, P.membLabel, X0 + 14*s, (yM0+yM1)/2, {size:22*ts, italic:true, color:shade(P.edgeColor, -10), align:"left"});
+  // ---- permeating molecules: feed → membrane (slow hops) → permeate, fade in / out at the ends
+  const cross = (n, r, col, seed, slow) => {
+    for (let i=0;i<n;i++){
+      const q = seed + i*19;
+      const u = ((i + rnd(q)*0.6)/n + t*k) % 1;
+      const xe = X0 + 175*s + ((i + 0.5)/n)*(X1-X0-215*s) + (rnd(q+1)-0.5)*24*s;    // clear of the membrane label
+      const pts = [[xe + (rnd(q+2)-0.5)*90*s, yF0 + 20*s + rnd(q+3)*50*s], [xe, yM0 - r*0.2]];
+      const hops = 4;
+      for (let h=1; h<hops; h++) pts.push([xe + (h % 2 ? 1 : -1)*9*s, lerp(yM0, yM1, h/hops)]);
+      const exit = [xe + 4*s, yM1 + r*0.2];
+      const end = [xe + (rnd(q+4)-0.5)*110*s, yP1 - 18*s - rnd(q+5)*50*s];
+      const a = 0.30, b = slow ? 0.78 : 0.68;                   // time split: approach | inside | permeate
+      let x, y;
+      if (u < a){ [x, y] = polyAt([pts[0], pts[1]], smooth(u/a)*0.999); }
+      else if (u < b){ [x, y] = polyAt([pts[1], ...pts.slice(2), exit], (u-a)/(b-a)); }
+      else { [x, y] = polyAt([exit, end], Math.sin((u-b)/(1-b)*Math.PI/2)); }
+      ballShade(ctx, x, y, r, col, fadeU(u));
+    }
+  };
+  cross(P.nPerm, rS, cS, 900, false);
+  cross(P.nLeak, rL, cL, 1300, true);
+  // ---- thickness bracket and flux arrow
+  if (P.showL){
+    const xb = X1 + 22*s;
+    ctx.strokeStyle = "#1e1e1e"; ctx.lineWidth = 2*s; ctx.beginPath();
+    ctx.moveTo(xb - 8*s, yM0); ctx.lineTo(xb + 8*s, yM0); ctx.moveTo(xb, yM0); ctx.lineTo(xb, yM1);
+    ctx.moveTo(xb - 8*s, yM1); ctx.lineTo(xb + 8*s, yM1); ctx.stroke();
+    text(ctx, "l", xb + 20*s, (yM0+yM1)/2, {size:28*ts, italic:true, bold:true, color:"#1e1e1e"});
+  }
+  if (P.showJ){
+    const xa = X1 + 92*s;
+    fatArrow(ctx, [[xa, yM0 - 95*s], [xa, yM1 + 95*s]], P.arrowColor, 16*s, 34*s);
+    text(ctx, "J", xa - 34*s, yM1 + 40*s, {size:28*ts, italic:true, bold:true, color:P.arrowColor});
+  }
+  // ---- labels (two-part: bold name + grey condition)
+  const pair = (a, b, y) => {
+    text(ctx, a, X0, y, {size:26*ts, bold:true, color:P.labelColor, align:"left"});
+    const w = a && textVisible(a) ? ctx.measureText(a).width + 12*s : 0;
+    text(ctx, b, X0 + w, y, {size:24*ts, color:"#6b7280", align:"left"});
+  };
+  pair(P.feedLabel, P.feedSub, 24*s);
+  pair(P.permLabel, P.permSub, 498*s);
+  text(ctx, P.dpLabel, X0, 538*s, {size:21*ts, color:"#6b7280", align:"left"});
+}
+
 const TEMPLATES = {
+  amine: {
+    name: "Amine scrubbing (absorber + stripper)",
+    desc: "Chemical absorption loop for H₂/CO₂. Shifted syngas enters the bottom of the absorber; H₂ rises through the packing and leaves overhead, while CO₂ is captured by the falling lean amine and leaves in the rich solvent. The rich amine is heated in the cross heat exchanger and stripped with reboiler steam, which releases the CO₂ overhead; the regenerated lean amine is pumped back. Pipes show the solvent circulating; bound CO₂ is drawn small inside a solvent halo.",
+    draw: drawAmine,
+    canvas: {w:800, h:560},
+    anim: {duration:6, fps:15},
+    params: [
+      {key:"colColor",  label:"Columns",            type:"color", def:"#475569"},
+      {key:"leanColor", label:"Lean amine",         type:"color", def:"#3b82f6"},
+      {key:"richColor", label:"Rich amine",         type:"color", def:"#f59e0b"},
+      {key:"nA",        label:"H₂ molecules",       type:"range", min:2, max:24, step:1, def:10},
+      {key:"nB",        label:"CO₂ molecules",      type:"range", min:2, max:20, step:1, def:9},
+      {key:"speed",     label:"Speed (cycles per loop)", type:"range", min:1, max:3, step:1, def:1},
+      {key:"molSize",   label:"Molecule size %",    type:"range", min:50, max:220, step:5, def:100},
+      {key:"pipeSize",  label:"Pipe thickness %",   type:"range", min:50, max:220, step:5, def:100},
+      {key:"textSize",  label:"Label size %",       type:"range", min:60, max:180, step:5, def:100},
+      {key:"absLabel",  label:"Absorber label",     type:"text", def:"absorber"},
+      {key:"strLabel",  label:"Stripper label",     type:"text", def:"stripper"},
+      {key:"rebLabel",  label:"Reboiler label",     type:"text", def:"reboiler"},
+      {key:"hxLabel",   label:"Heat exchanger label", type:"text", def:"heat exchanger"},
+      {key:"feedLabel", label:"Feed label",         type:"text", def:"auto"},
+      {key:"h2Label",   label:"H₂ product label",   type:"text", def:"auto"},
+      {key:"co2Label",  label:"CO₂ product label",  type:"text", def:"auto"},
+      {key:"leanLabel", label:"Lean amine label",   type:"text", def:"lean amine"},
+      {key:"richLabel", label:"Rich amine label",   type:"text", def:"rich amine"},
+      {key:"steamLabel",label:"Steam label",        type:"text", def:"steam"},
+    ],
+  },
+  mech: {
+    name: "Gas transport mechanism (pick one of six)",
+    desc: "One panel of the classic membrane transport-mechanism figure: viscous (Poiseuille) flow, Knudsen diffusion, molecular sieving, solution–diffusion, surface diffusion or capillary condensation. Red = the smaller / lighter / more condensable gas, purple = the larger, heavier, non-adsorbing gas. Export one GIF per mode; captions are meant to sit on the slide as text.",
+    draw: drawMech,
+    canvas: {w:600, h:420},
+    anim: {duration:4, fps:15},
+    params: [
+      {key:"mode",       label:"Mechanism",          type:"select", def:"sieving",
+        options:[["viscous","Viscous (Poiseuille) flow"],["knudsen","Knudsen diffusion"],["sieving","Molecular sieving"],
+                 ["solution","Solution–diffusion"],["surface","Surface diffusion"],["capillary","Capillary condensation"]]},
+      {key:"smallColor", label:"Small / condensable gas", type:"color", def:"#e53935"},
+      {key:"bigColor",   label:"Large gas",          type:"color", def:"#8e5cc4"},
+      {key:"wallColor",  label:"Pore walls",         type:"color", def:"#6b7f90"},
+      {key:"densColor",  label:"Dense film",         type:"color", def:"#f2d27a"},
+      {key:"speed",      label:"Speed (cycles per loop)", type:"range", min:1, max:3, step:1, def:1},
+      {key:"molSize",    label:"Molecule size %",    type:"range", min:60, max:180, step:5, def:100},
+      {key:"textSize",   label:"Label size %",       type:"range", min:60, max:180, step:5, def:100},
+      {key:"showLabels", label:"Δp / step labels & guide arrows", type:"checkbox", def:true},
+    ],
+  },
+  membBasics: {
+    name: "Membrane basics — feed / membrane / permeate",
+    desc: "Cartoon for introducing permeability and selectivity. A crowded high-pressure feed (small red H₂, large purple CO₂) sits above a dense membrane of thickness l; small molecules hop through the membrane and spread into the dilute low-pressure permeate, most large molecules bounce off the surface and only a rare one leaks through. A navy arrow marks the flux J. Every motion loops seamlessly.",
+    draw: drawMembBasics,
+    canvas: {w:680, h:560},
+    anim: {duration:6, fps:15},
+    params: [
+      {key:"smallColor", label:"Small gas (H₂)",       type:"color", def:"#e53935"},
+      {key:"bigColor",   label:"Large gas (CO₂)",      type:"color", def:"#8e5cc4"},
+      {key:"membColor",  label:"Membrane",             type:"color", def:"#b8c4cf"},
+      {key:"edgeColor",  label:"Membrane edge",        type:"color", def:"#6b7f90"},
+      {key:"feedTint",   label:"Feed-side tint",       type:"color", def:"#e3ecf8"},
+      {key:"arrowColor", label:"Flux arrow",           type:"color", def:"#003399"},
+      {key:"labelColor", label:"Feed / permeate labels", type:"color", def:"#003399"},
+      {key:"nFeedSmall", label:"Small molecules in feed", type:"range", min:0, max:30, step:1, def:12},
+      {key:"nFeedBig",   label:"Large molecules in feed", type:"range", min:0, max:20, step:1, def:7},
+      {key:"nBounce",    label:"Large molecules bouncing", type:"range", min:0, max:10, step:1, def:4},
+      {key:"nPerm",      label:"Small molecules permeating", type:"range", min:1, max:20, step:1, def:9},
+      {key:"nLeak",      label:"Large molecules leaking", type:"range", min:0, max:4, step:1, def:1},
+      {key:"speed",      label:"Speed (cycles per loop)", type:"range", min:1, max:3, step:1, def:1},
+      {key:"molSize",    label:"Molecule size %",      type:"range", min:60, max:180, step:5, def:100},
+      {key:"textSize",   label:"Label size %",         type:"range", min:60, max:180, step:5, def:100},
+      {key:"showZones",  label:"Pressure-zone tint",   type:"checkbox", def:true},
+      {key:"showL",      label:"Thickness bracket l",  type:"checkbox", def:true},
+      {key:"showJ",      label:"Flux arrow J",         type:"checkbox", def:true},
+      {key:"membLabel",  label:"Membrane label",       type:"text", def:"membrane"},
+      {key:"feedLabel",  label:"Feed label",           type:"text", def:"Feed"},
+      {key:"feedSub",    label:"Feed condition",       type:"text", def:"high pressure p₁"},
+      {key:"permLabel",  label:"Permeate label",       type:"text", def:"Permeate"},
+      {key:"permSub",    label:"Permeate condition",   type:"text", def:"low pressure p₂"},
+      {key:"dpLabel",    label:"Driving-force line",   type:"text", def:"Driving force: Δp = p₁ − p₂"},
+    ],
+  },
+  h2City: {
+    name: "Hydrogen uses — isometric city (power, transport, industry, buildings)",
+    desc: "An isometric city block for a 'What is H₂ used for?' slide. An H₂ hub (sphere tank, fed by an electrolyser, wind turbines and solar panels) sends hydrogen through cyan pipelines — H₂ molecules visibly flowing — to the four end uses: power generation (H₂ turbine plant with storage tanks), transportation (H₂ refuelling station, fuel-cell cars, buses, trucks and a train on the roads), industry (steel works and ammonia plant) and buildings (office towers, homes with fuel-cell units). Stacks release only water vapour. Every motion loops seamlessly.",
+    draw: drawH2City,
+    canvas: {w:900, h:640},
+    anim: {duration:6, fps:15},
+    params: [
+      {key:"speed",      label:"Speed (cycles per loop)", type:"range", min:1, max:3, step:1, def:1},
+      {key:"traffic",    label:"Moving vehicles",      type:"range", min:0, max:6, step:1, def:6},
+      {key:"molSize",    label:"H₂ molecule size %",   type:"range", min:50, max:200, step:5, def:100},
+      {key:"textSize",   label:"Label size %",         type:"range", min:60, max:180, step:5, def:100},
+      {key:"groundColor",label:"Ground",               type:"color", def:"#cfe8b0"},
+      {key:"pipeColor",  label:"H₂ pipeline",          type:"color", def:"#22d3ee"},
+      {key:"accent",     label:"Accent (tanks, stacks)",type:"color", def:"#f59e0b"},
+      {key:"showPipes",  label:"H₂ pipelines",         type:"checkbox", def:true},
+      {key:"showFlow",   label:"H₂ molecules in pipes",type:"checkbox", def:true},
+      {key:"showSteam",  label:"Water-vapour puffs",   type:"checkbox", def:true},
+      {key:"showTrain",  label:"Train",                type:"checkbox", def:true},
+      {key:"showTags",   label:"Small tags",           type:"checkbox", def:true},
+      {key:"title",      label:"Title",                type:"text", def:""},
+      {key:"powerLabel", label:"Sector: power",        type:"text", def:"Power generation"},
+      {key:"transLabel", label:"Sector: transport",    type:"text", def:"Transportation"},
+      {key:"indLabel",   label:"Sector: industry",     type:"text", def:"Industry"},
+      {key:"bldLabel",   label:"Sector: buildings",    type:"text", def:"Buildings"},
+      {key:"hubLabel",   label:"Hub label",            type:"text", def:"H₂"},
+      {key:"tagPower",   label:"Tag: power plant",     type:"text", def:"H₂ turbine"},
+      {key:"tagStation", label:"Tag: station",         type:"text", def:"H₂ refuelling"},
+      {key:"tagSteel",   label:"Tag: steel",           type:"text", def:"green steel"},
+      {key:"tagNH3",     label:"Tag: ammonia",         type:"text", def:"NH₃"},
+      {key:"tagFC",      label:"Tag: homes",           type:"text", def:"fuel cell"},
+    ],
+  },
   goCsLayers: {
     name: "GO/chitosan laminate — H₂O permeation (cross-section)",
     desc: "A GO/chitosan composite laminate seen edge-on: rows of GO flakes in brick order, each a patchwork of oxidized domains (orange) carrying grafted chitosan chains and bare graphitic domains (grey). H₂O drops in from the feed and works its way down: along each gallery it hops from one chitosan tip to the next, pausing at each (sorption, dashed H-bond), slides quickly over the graphitic patches, and falls through the slit where a flake ends. CO₂ barely sorbs — it touches the outer chitosan brush and is turned back. The dashed guide is the real route of one molecule.",
@@ -3561,6 +5000,51 @@ const TEMPLATES = {
       {key:"dpLabel",   label:"Driving-force label",  type:"text", def:"ΔP"},
     ],
   },
+  goSpacer: {
+    name: "GO + inert spacer laminate — acts on D, not S (cross-section)",
+    desc: "Companion to 'GO/chitosan laminate': the same GO flakes in the same brick order, but the galleries are propped open by inert round spacers instead of chitosan chains. The wider gallery d lets both gases move faster (D ↑), but there are no sorption sites, so nothing holds H₂O back or favours it over CO₂: both permeate without stopping and the selectivity does not improve (S unchanged). Set the same gases, speed and layers as the GO/CS template for a side-by-side comparison.",
+    draw: (ctx,t,P,W,H) => drawGOCSLayers(ctx, t,
+      Object.assign({chainLen:100, density:2, dwell:0, showHB:false, csColor:"#4c9a50", csTip:"#166534", grColor:"#4b5563"}, P, {spacerMode:true, oxFrac:100, grLabel:""}), W, H),
+    canvas: {w:860, h:540},
+    anim: {duration:5, fps:16},
+    params: [
+      {key:"gasA",      label:"Gas A",                type:"select", def:"H2O", options:GAS_OPTIONS},
+      {key:"gasB",      label:"Gas B",                type:"select", def:"CO2", options:GAS_OPTIONS},
+      {key:"nA",        label:"Gas A molecules",      type:"range", min:2, max:30, step:1, def:10},
+      {key:"nB",        label:"Gas B molecules",      type:"range", min:0, max:30, step:1, def:8},
+      {key:"permB",     label:"Gas B permeating (%)", type:"range", min:0, max:100, step:5, def:75},
+      {key:"feedMols",  label:"Idle feed molecules",  type:"range", min:0, max:20, step:1, def:6},
+      {key:"speed",     label:"Flow speed",           type:"select", def:"0.333", options:SLOW_SPEEDS},
+      {key:"layers",    label:"Flake layers",         type:"range", min:2, max:9, step:1, def:4},
+      {key:"flakeLen",  label:"Flake length L %",     type:"range", min:50, max:200, step:5, def:130},
+      {key:"interlayer",label:"Interlayer d %",       type:"range", min:60, max:220, step:5, def:140},
+      {key:"flakeThick",label:"Flake thickness %",    type:"range", min:50, max:200, step:5, def:100},
+      {key:"membWidth", label:"Membrane width %",     type:"range", min:60, max:130, step:5, def:100},
+      {key:"supSize",   label:"Support thickness %",  type:"range", min:50, max:200, step:5, def:100},
+      {key:"spDensity", label:"Spacer density",       type:"range", min:0.5, max:4, step:0.25, def:1.25},
+      {key:"spSize",    label:"Spacer size % of d",   type:"range", min:40, max:100, step:5, def:100},
+      {key:"molSize",   label:"Molecule size %",      type:"range", min:60, max:220, step:5, def:120},
+      {key:"oxColor",   label:"GO flakes",            type:"color", def:"#c2621f"},
+      {key:"spColor",   label:"Spacer",               type:"color", def:"#8e5cc4"},
+      {key:"supColor",  label:"Support",              type:"color", def:"#1e293b"},
+      {key:"pathColor", label:"Path guide",           type:"color", def:"#dc2626"},
+      {key:"showPath",  label:"Path guide",           type:"checkbox", def:true},
+      {key:"showD",     label:"d marker",             type:"checkbox", def:true},
+      {key:"showZones", label:"Feed / permeate boxes",type:"checkbox", def:true},
+      {key:"showSupport",label:"Porous support",      type:"checkbox", def:true},
+      {key:"showKey",   label:"Molecule key",         type:"checkbox", def:true},
+      {key:"textSize",  label:"Label size %",         type:"range", min:60, max:200, step:5, def:100},
+      {key:"title",     label:"Title",                type:"text", def:""},
+      {key:"feedLabel", label:"Feed label",           type:"text", def:"auto"},
+      {key:"permLabel", label:"Permeate label",       type:"text", def:"auto"},
+      {key:"rejLabel",  label:"Verdict label",        type:"text", def:"auto"},
+      {key:"oxLabel",   label:"Spacer legend",        type:"text", def:"auto"},
+      {key:"membLabel", label:"Laminate label",       type:"text", def:"GO + spacer"},
+      {key:"supLabel",  label:"Support label",        type:"text", def:"support"},
+      {key:"dLabel",    label:"Gallery symbol",       type:"text", def:"d ↑"},
+      {key:"dpLabel",   label:"Driving-force label",  type:"text", def:"ΔP"},
+    ],
+  },
   goCs3D: {
     name: "GO/chitosan composite — 3D chitosan channels (H₂O / CO₂)",
     desc: "Pseudo-3D close-up of a GO/chitosan composite: a graphene-oxide sheet (hydrophobic basal plane, honeycomb) carrying parallel chitosan chains drawn as space-filling CPK atoms (C grey, O red, N blue, H white) with a cyan glow. Between neighbouring chains run hydrophilic channels (translucent blue slabs): H₂O enters a channel mouth (blue arrow) and travels along it, hopping between chitosan sites; CO₂ reaches the mouth, rattles and is turned away (red arrow). The chains are a schematic glucosamine model, not an MD snapshot. Turn the camera with yaw / pitch.",
@@ -3577,12 +5061,17 @@ const TEMPLATES = {
       {key:"zoom",      label:"Zoom %",               type:"range", min:60, max:130, step:5, def:100},
       {key:"atomScale", label:"Chain atom size %",    type:"range", min:60, max:130, step:5, def:100},
       {key:"molScale",  label:"H₂O / CO₂ size %",     type:"range", min:60, max:180, step:5, def:100},
-      {key:"sheetColor",label:"GO sheet",             type:"color", def:"#e8d6ba"},
+      {key:"sheetMode", label:"GO sheet style",       type:"select", def:"atoms",
+        options:[["atoms","Carbon lattice (ball-and-stick GO)"],["slab","Flat slab"]]},
+      {key:"oxFrac",    label:"GO oxidised sites %",  type:"range", min:0, max:30, step:1, def:12},
+      {key:"sheetAtom", label:"GO atom size %",       type:"range", min:60, max:160, step:5, def:100},
+      {key:"cColor",    label:"GO carbon",            type:"color", def:"#5a5d64"},
+      {key:"sheetColor",label:"GO slab (slab style)", type:"color", def:"#e8d6ba"},
       {key:"glowColor", label:"Chain glow",           type:"color", def:"#46bef5"},
       {key:"chanColor", label:"Channel",              type:"color", def:"#3caaeb"},
       {key:"inColor",   label:"Inlet arrow",          type:"color", def:"#5faaeb"},
       {key:"rejColor",  label:"Rejection arrow",      type:"color", def:"#c4463a"},
-      {key:"showHoney", label:"Honeycomb lattice",    type:"checkbox", def:true},
+      {key:"showHoney", label:"Honeycomb on slab",    type:"checkbox", def:true},
       {key:"showGlow",  label:"Chain glow",           type:"checkbox", def:true},
       {key:"showChan",  label:"Channel slabs",        type:"checkbox", def:true},
       {key:"chanAlpha", label:"Channel opacity %",    type:"range", min:10, max:100, step:5, def:100},
@@ -3625,6 +5114,99 @@ const TEMPLATES = {
       {key:"legEng",    label:"Legend: star",         type:"text", def:"pathway-engineered"},
       {key:"footer",    label:"Footer",               type:"text", def:"Same thickness, same molecules, same feed — only the transport pathway is changed"},
     ],
+  },
+  pathLen: {
+    name: "Pathway length — thickness vs flake size (3 panels)",
+    desc: "Tortuous gallery route through a GO laminate and the two ways to shorten it. Middle: reference laminate of thickness l. Left: a thinner laminate (l′, fewer flake rows), so fewer galleries to cross. Right: the same thickness built from smaller flakes, so each lateral detour (half a flake pitch) is shorter. H₂ and CO₂ ride the dashed route at the same speed; with 'Flux ∝ 1/path' the feed rate in each panel scales with its shorter path.",
+    draw: drawPathLen,
+    canvas: {w:1240, h:290},
+    anim: {duration:5, fps:20},
+    params: [
+      {key:"rows",       label:"Flake rows (reference)", type:"range", min:3, max:9, step:1, def:5},
+      {key:"thinRows",   label:"Flake rows (thinner)",   type:"range", min:1, max:8, step:1, def:3},
+      {key:"flakeLen",   label:"Flake length (px)",      type:"range", min:70, max:220, step:5, def:130},
+      {key:"sizeRatio",  label:"Small flakes, % of length", type:"range", min:25, max:90, step:5, def:50},
+      {key:"flakeThick", label:"Flake thickness %",      type:"range", min:50, max:200, step:5, def:100},
+      {key:"gallery",    label:"Interlayer gap %",       type:"range", min:70, max:200, step:5, def:100},
+      {key:"speed",      label:"Speed ×",                type:"range", min:0.5, max:2, step:0.1, def:1},
+      {key:"nMol",       label:"Molecules per loop (reference)", type:"range", min:2, max:12, step:1, def:5},
+      {key:"molSize",    label:"Molecule size %",        type:"range", min:60, max:160, step:5, def:100},
+      {key:"textSize",   label:"Label size %",           type:"range", min:60, max:160, step:5, def:100},
+      {key:"goColor",    label:"GO flakes",              type:"color", def:"#c55a11"},
+      {key:"pathColor",  label:"Path line",              type:"color", def:"#c00000"},
+      {key:"fluxScale",  label:"Flux ∝ 1/path length",   type:"checkbox", def:true},
+      {key:"showGuide",  label:"Dashed path",            type:"checkbox", def:true},
+      {key:"feedMol",    label:"Feed stream molecules",  type:"range", min:0, max:16, step:1, def:8},
+      {key:"showAmbient",label:"Feed stream",            type:"checkbox", def:true},
+      {key:"showPathLen",label:"Path-length readout",    type:"checkbox", def:false},
+      {key:"title",      label:"Title",                  type:"text", def:""},
+      {key:"thickLabel", label:"Left arrow label",       type:"text", def:"Thickness"},
+      {key:"sizeLabel",  label:"Right arrow label",      type:"text", def:"Flake size"},
+      {key:"lMid",       label:"Thickness symbol",       type:"text", def:"l"},
+      {key:"lThin",      label:"Thin thickness symbol",  type:"text", def:"l′"},
+      {key:"capLeft",    label:"Left caption",           type:"text", def:""},
+      {key:"capMid",     label:"Middle caption",         type:"text", def:""},
+      {key:"capRight",   label:"Right caption",          type:"text", def:""},
+    ],
+  },
+  pathThick: {
+    name: "Thin vs thick GO laminate — pathway length (2 panels)",
+    desc: "Two GO laminates with the same flakes and the same interlayer spacing, one thin (few rows) and one thick (many rows). H₂ and CO₂ drop into the top gallery, run along it to the nearest slit and drop to the next gallery. CO₂ is sieved in every gallery it crosses, so most CO₂ is turned back in the thick film while H₂ still gets through: a longer pathway raises selectivity and costs permeability. Port of the oral-defence GIF g2_pathway.py; fewer molecules by default.",
+    draw: drawPathPair,
+    canvas: {w:930, h:475},
+    anim: {duration:6, fps:20},
+    params: pathPairParams({rowsA:3, rowsB:9, flakeA:74, flakeB:74, nMol:10, feedMol:6, co2Pass:50, permH:70,
+      titleA:"Thin laminate (33 nm)", subA:"short pathway: fast, less selective",
+      titleB:"Thick laminate (160 nm)", subB:"long pathway: selective, but slower",
+      footer:"Same interlayer spacing (0.86 nm) — only the pathway length changes"}),
+  },
+  pathFlake: {
+    name: "Large vs small GO flakes — pathway length (2 panels)",
+    desc: "Companion to 'Thin vs thick GO laminate': two laminates of the same thickness and spacing, built from large flakes (left) and small flakes (right). With small flakes an edge is never far away, so each in-gallery detour is short: molecules cross faster and CO₂ is sieved less often. Large flakes lengthen the route without changing the thickness.",
+    draw: drawPathPair,
+    canvas: {w:930, h:400},
+    anim: {duration:6, fps:20},
+    params: pathPairParams({rowsA:5, rowsB:5, flakeA:140, flakeB:46, nMol:10, feedMol:6, co2Pass:50, permH:60, showGuide:true, guideX:42,
+      titleA:"Large flakes (2.1 μm)", subA:"long detour in each gallery: selective, slower",
+      titleB:"Small flakes (0.8 μm)", subB:"edges close by, short detours: faster, less selective",
+      footer:"Same thickness and interlayer spacing — only the in-plane path changes"}),
+  },
+  mixCompete: {
+    name: "Pure vs mixed gas in one GO gallery — competition (D down, S up, P same)",
+    desc: "Close-up of one GO gallery, twice. Top: pure CO₂ — CO₂ hops from one oxygen site to the next and waits briefly at each. Bottom: H₂/CO₂ mixture — H₂ runs down the gallery too, so every CO₂ hop waits longer (D falls) and more CO₂ sits in the channel at any moment (S rises). The same number of CO₂ leaves each channel per loop, so P is unchanged. Labels are hidden in the slide export and set in PowerPoint instead.",
+    draw: drawCompete,
+    canvas: {w:640, h:224},
+    anim: {duration:6, fps:20},
+    params: [
+      {key:"nCO2",     label:"CO₂ per loop (both channels)", type:"range", min:1, max:10, step:1, def:4},
+      {key:"nH2",      label:"H₂ per loop (mixture)",       type:"range", min:0, max:10, step:1, def:4},
+      {key:"dwellPure",label:"CO₂ wait per site, pure (frames)",    type:"range", min:0, max:30, step:1, def:2},
+      {key:"dwellMix", label:"CO₂ wait per site, mixture (frames)", type:"range", min:0, max:40, step:1, def:16},
+      {key:"nSites",   label:"Oxygen sites along the gallery", type:"range", min:4, max:20, step:1, def:11},
+      {key:"chGap",    label:"Gallery height (px)",         type:"range", min:30, max:80, step:2, def:40},
+      {key:"speed",    label:"Speed ×",                     type:"range", min:0.5, max:2, step:0.1, def:1},
+      {key:"molSize",  label:"Molecule size %",             type:"range", min:60, max:160, step:5, def:100},
+      {key:"textSize", label:"Label size %",                type:"range", min:60, max:160, step:5, def:100},
+      {key:"showSites",label:"Oxygen sites",                type:"checkbox", def:true},
+      {key:"showArrow",label:"Flow arrow at the exit",      type:"checkbox", def:false},
+      {key:"goColor",  label:"GO sheets",                   type:"color", def:"#c46220"},
+      {key:"goEdge",   label:"GO sheet edge",               type:"color", def:"#964614"},
+      {key:"chTint",   label:"Gallery",                     type:"color", def:"#f3f6fa"},
+      {key:"siteColor",label:"Oxygen sites",                type:"color", def:"#2f6fb0"},
+      {key:"labelA",   label:"Top label",    type:"text", def:"Pure CO₂: short waits, few CO₂ inside"},
+      {key:"labelB",   label:"Bottom label", type:"text", def:"H₂ + CO₂: longer waits (D ↓), more CO₂ inside (S ↑)"},
+    ],
+  },
+  pathStack: {
+    name: "Thin film: loose large flakes vs tight small flakes (2 panels)",
+    desc: "A possible reason why very thin films of large flakes are the more permeable ones. With only a few layers, large sheets cannot conform to each other or to the support: they wrinkle and stack loosely: the edges of neighbouring layers almost line up and the flakes overlap only a little (left, row-to-row offset 24 px), so each gallery detour is short. Small sheets tile the same few layers as a regular brick wall (right, offset = half a pitch). The dashed lines trace one route through each film. 'Through-gaps' (0 by default) can add straight columns that do not sieve.",
+    draw: drawPathPair,
+    canvas: {w:930, h:330},
+    anim: {duration:6, fps:20},
+    params: pathPairParams({rowsA:3, rowsB:3, flakeA:150, flakeB:46, wrinkleA:3, voidsA:0, shiftA:24, shiftB:30, nMol:10, feedMol:6, co2Pass:50, permH:60, showGuide:true, guideX:42,
+      titleA:"Thin film of large flakes", subA:"loose stacking: edges nearly line up, short detours",
+      titleB:"Thin film of small flakes", subB:"dense tiling: every route goes through the galleries",
+      footer:"Hypothesis — not measured directly"}),
   },
   crumpledMap: {
     name: "P–S map — flat vs crumpled GO insets (title slide)",
